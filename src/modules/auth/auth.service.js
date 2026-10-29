@@ -67,12 +67,23 @@ const enrichUserWithOrgDetails = async (user) => {
   if (!user) return user;
   const orgId = user.organization_id || user.organizationId;
   let org = null;
+  let hasActiveSubscription = true;
+  let subscriptionStatus = 'ACTIVE';
+
   if (orgId) {
     try {
       const tenancyModel = require('../tenancy/tenancy.model');
       org = await tenancyModel.findOrganizationById(orgId);
     } catch (_) {}
+
+    try {
+      const subscriptionService = require('../subscriptions/subscription.service');
+      const subDetails = await subscriptionService.getSubscriptionByOrg(orgId, { isMasterAdmin: true });
+      hasActiveSubscription = subDetails?.hasActiveSubscription ?? (org ? org.is_active !== false : true);
+      subscriptionStatus = subDetails?.status || (hasActiveSubscription ? 'ACTIVE' : 'NO_SUBSCRIPTION');
+    } catch (_) {}
   }
+
   const defaultModules = ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'];
   const enabledModules = org?.enabled_modules || defaultModules;
   return {
@@ -86,7 +97,12 @@ const enrichUserWithOrgDetails = async (user) => {
       name: org.name,
       code: org.code,
       enabled_modules: enabledModules,
+      has_active_subscription: hasActiveSubscription,
+      hasActiveSubscription: hasActiveSubscription,
     } : null,
+    has_active_subscription: hasActiveSubscription,
+    hasActiveSubscription: hasActiveSubscription,
+    subscription_status: subscriptionStatus,
     enabled_modules: enabledModules,
     enabledModules: enabledModules,
   };

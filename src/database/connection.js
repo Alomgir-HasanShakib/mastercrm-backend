@@ -159,6 +159,41 @@ async function ensureDatabaseSchema() {
       }
     }
 
+    // Ensure all active tenant organizations have an active subscription record in 'subscriptions' table
+    const hasSubsTable = await db.schema.hasTable('subscriptions');
+    if (hasSubsTable) {
+      const orgsWithoutSubs = await db('organizations')
+        .whereNotExists(function () {
+          this.select(1).from('subscriptions').whereRaw('subscriptions.organization_id = organizations.id');
+        })
+        .where('is_active', true)
+        .select('id', 'name', 'enable_ai_audit', 'max_users');
+
+      for (const org of orgsWithoutSubs) {
+        const { randomUUID } = require('crypto');
+        await db('subscriptions').insert({
+          id: randomUUID(),
+          organization_id: org.id,
+          plan_name: 'Enterprise SaaS Suite',
+          base_price: 499.00,
+          ai_audit_price: 199.00,
+          total_price: 698.00,
+          currency: 'USD',
+          has_ai_audit: Boolean(org.enable_ai_audit),
+          billing_cycle: 'ANNUAL',
+          start_date: new Date(),
+          end_date: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000), // 1 year active license
+          status: 'ACTIVE',
+          auto_renew: true,
+          created_at: new Date(),
+          updated_at: new Date(),
+        });
+      }
+      if (orgsWithoutSubs.length > 0) {
+        console.log(`[Database] Auto-provisioned 1-year active subscriptions for ${orgsWithoutSubs.length} organization(s).`);
+      }
+    }
+
     return true;
   } catch (err) {
     console.warn('[Database] Auto-migration check notice:', err.message);

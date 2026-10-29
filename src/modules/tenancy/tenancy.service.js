@@ -77,6 +77,33 @@ const createOrganization = async (data, tenantContext = {}) => {
     code,
   });
 
+  // 1.1 Automatically provision active Enterprise SaaS subscription
+  try {
+    const subscriptionService = require('../subscriptions/subscription.service');
+    const validityStart = data.validityStart ? new Date(data.validityStart) : new Date();
+    const validityEnd = data.validityEnd
+      ? new Date(data.validityEnd)
+      : new Date(Date.now() + 365 * 24 * 60 * 60 * 1000); // 1 year active license by default
+
+    await subscriptionService.createOrRenewSubscription(
+      {
+        organizationId: createdOrg.id,
+        planName: 'Enterprise SaaS Suite',
+        billingCycle: 'ANNUAL',
+        hasAiAudit: createdOrg.enable_ai_audit !== false,
+        startDate: validityStart,
+        endDate: validityEnd,
+        status: 'ACTIVE',
+        userCapacity: createdOrg.max_users || 50,
+        userLicense: data.maxConcurrentSeats || 10,
+        aiLicense: data.auditAiLicenses || 5,
+      },
+      { isMasterAdmin: true }
+    );
+  } catch (subErr) {
+    console.warn('Auto subscription provisioning notice:', subErr.message);
+  }
+
   // 2. Automatically create Organization Admin user
   const adminEmail = (data.adminEmail || data.email || `${code.toLowerCase()}@${data.domain || 'mastercrm.io'}`).toLowerCase().trim();
   const defaultPassword = data.adminPassword || 'Admin@123';

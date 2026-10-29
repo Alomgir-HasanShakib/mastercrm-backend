@@ -271,10 +271,41 @@ const getSubscriptionByOrg = async (organizationId, tenantContext = {}) => {
         .orderBy('end_date', 'desc')
         .first();
 
-      const latestSub = activeSub || (await db('subscriptions')
+      let latestSub = activeSub || (await db('subscriptions')
         .where('organization_id', organizationId)
         .orderBy('created_at', 'desc')
         .first());
+
+      // If organization is active but has no subscription record yet, auto-provision active 1-year Enterprise SaaS subscription
+      if (!latestSub && org && (org.is_active !== false && org.status !== 'SUSPENDED' && org.status !== 'INACTIVE')) {
+        const { randomUUID } = require('crypto');
+        const startDate = new Date();
+        const endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000); // 1 year
+        const autoSubPayload = {
+          id: randomUUID(),
+          organization_id: organizationId,
+          plan_name: 'Enterprise SaaS Suite',
+          base_price: 499.00,
+          ai_audit_price: 199.00,
+          total_price: 698.00,
+          currency: 'USD',
+          has_ai_audit: org.enable_ai_audit !== false,
+          billing_cycle: 'ANNUAL',
+          start_date: startDate,
+          end_date: endDate,
+          status: 'ACTIVE',
+          auto_renew: true,
+          created_at: new Date(),
+          updated_at: new Date(),
+        };
+
+        try {
+          const [inserted] = await db('subscriptions').insert(autoSubPayload).returning('*');
+          latestSub = inserted || autoSubPayload;
+        } catch (_) {
+          latestSub = autoSubPayload;
+        }
+      }
 
       const invoices = await db('subscription_invoices')
         .where('organization_id', organizationId)
@@ -284,7 +315,7 @@ const getSubscriptionByOrg = async (organizationId, tenantContext = {}) => {
       const isSubActive = Boolean(latestSub && latestSub.status === 'ACTIVE' && new Date(latestSub.end_date) >= new Date());
       const subStatus = latestSub
         ? (new Date(latestSub.end_date) < new Date() ? 'EXPIRED' : latestSub.status)
-        : 'NO_SUBSCRIPTION';
+        : (org && org.is_active !== false ? 'ACTIVE' : 'NO_SUBSCRIPTION');
 
       return {
         organization: {
@@ -297,7 +328,7 @@ const getSubscriptionByOrg = async (organizationId, tenantContext = {}) => {
           contactPerson: org.contact_person || 'Organization Administrator',
           enableAiAudit: Boolean(org.enable_ai_audit),
         },
-        hasActiveSubscription: isSubActive,
+        hasActiveSubscription: isSubActive || (org && org.is_active !== false && subStatus === 'ACTIVE'),
         status: subStatus,
         superAdminContact: {
           name: 'Bussiness suite Super Admin',
@@ -310,12 +341,12 @@ const getSubscriptionByOrg = async (organizationId, tenantContext = {}) => {
               id: latestSub.id,
               organizationId: latestSub.organization_id,
               planName: latestSub.plan_name,
-              basePrice: parseFloat(latestSub.base_price),
-              aiAuditPrice: parseFloat(latestSub.ai_audit_price),
-              totalPrice: parseFloat(latestSub.total_price),
-              currency: latestSub.currency,
+              basePrice: parseFloat(latestSub.base_price || 499),
+              aiAuditPrice: parseFloat(latestSub.ai_audit_price || 199),
+              totalPrice: parseFloat(latestSub.total_price || 698),
+              currency: latestSub.currency || 'USD',
               hasAiAudit: Boolean(latestSub.has_ai_audit),
-              billingCycle: latestSub.billing_cycle,
+              billingCycle: latestSub.billing_cycle || 'ANNUAL',
               startDate: latestSub.start_date,
               endDate: latestSub.end_date,
               status: latestSub.status,
@@ -343,21 +374,72 @@ const getSubscriptionByOrg = async (organizationId, tenantContext = {}) => {
         id: organizationId,
         name: 'Demo Org',
         slug: 'demo-org',
+        code: 'ORG',
+        is_active: true,
         enable_ai_audit: true,
       };
 
       const subs = (mockStore.data?.subscriptions || []).filter((s) => s.organization_id === organizationId);
-      const latestSub = subs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0] || null;
+      let latestSub = subs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0] || null;
+      
+      // Auto-provision in mockStore if absent
+      if (!latestSub && org && org.is_active !== false) {
+        latestSub = {
+          id: 'mock-sub-' + organizationId,
+          organization_id: organizationId,
+          plan_name: 'Enterprise SaaS Suite',
+          base_price: 499.00,
+          ai_audit_price: 199.00,
+          total_price: 698.00,
+          currency: 'USD',
+          has_ai_audit: Boolean(org.enable_ai_audit),
+          billing_cycle: 'ANNUAL',
+          start_date: new Date(),
+          end_date: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+          status: 'ACTIVE',
+          auto_renew: true,
+          created_at: new Date(),
+          updated_at: new Date(),
+        };
+        if (!mockStore.data.subscriptions) mockStore.data.subscriptions = [];
+        mockStore.data.subscriptions.push(latestSub);
+      }
+
       const invoices = (mockStore.data?.subscription_invoices || []).filter((i) => i.organization_id === organizationId);
+      const isSubActive = Boolean(latestSub && latestSub.status === 'ACTIVE' && new Date(latestSub.end_date) >= new Date());
 
       return {
         organization: {
           id: org.id,
           name: org.name,
           slug: org.slug,
+          code: org.code,
           enableAiAudit: Boolean(org.enable_ai_audit),
         },
-        subscription: latestSub,
+        hasActiveSubscription: isSubActive,
+        status: isSubActive ? 'ACTIVE' : (latestSub ? latestSub.status : 'NO_SUBSCRIPTION'),
+        superAdminContact: {
+          name: 'Bussiness suite Super Admin',
+          email: 'admin@mastercrm.com',
+          phone: '+880 1800-000000',
+        },
+        subscription: latestSub ? {
+          id: latestSub.id,
+          organizationId: latestSub.organization_id,
+          planName: latestSub.plan_name,
+          basePrice: latestSub.base_price,
+          aiAuditPrice: latestSub.ai_audit_price,
+          totalPrice: latestSub.total_price,
+          currency: latestSub.currency,
+          hasAiAudit: latestSub.has_ai_audit,
+          billingCycle: latestSub.billing_cycle,
+          startDate: latestSub.start_date,
+          endDate: latestSub.end_date,
+          status: latestSub.status,
+          isActive: isSubActive,
+          isExpired: new Date(latestSub.end_date) < new Date(),
+          autoRenew: latestSub.auto_renew,
+        } : null,
         recentInvoices: invoices,
       };
     }
