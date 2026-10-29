@@ -8,6 +8,7 @@ const tenancyModel = require('./tenancy.model');
 const usersModel = require('../users/users.model');
 const { hashPassword } = require('../../utils/crypto');
 const db = require('../../database/connection');
+const mockStore = require('../../database/mockStore');
 
 // ==========================================
 // ORGANIZATIONS
@@ -82,61 +83,61 @@ const createOrganization = async (data, tenantContext = {}) => {
   const adminName = data.adminName || `${createdOrg.name} Admin`;
 
   try {
+    let orgAdminRole = null;
+    try {
+      orgAdminRole = await db('roles')
+        .where('slug', 'ORGANIZATION_ADMIN')
+        .orWhere('slug', 'ORG_ADMIN')
+        .first();
+
+      if (!orgAdminRole) {
+        const { randomUUID } = require('crypto');
+        const [inserted] = await db('roles')
+          .insert({
+            id: randomUUID(),
+            name: 'Organization Administrator',
+            slug: 'ORGANIZATION_ADMIN',
+            display_name: 'Organization Admin',
+            description: 'Tenant Organization Administrator managing organization vendors, users, campaigns, and operations.',
+            is_system: true,
+            permissions: JSON.stringify([
+              'tenancy:*',
+              'organizations:read',
+              'clients:*',
+              'vendors:*',
+              'projects:*',
+              'users:*',
+              'questionnaires:*',
+              'submissions:*',
+              'capi:*',
+              'super_audit:*',
+              'tvc:*',
+              'fa:*',
+              'reports:*',
+              'audit_logs:read',
+            ]),
+            created_at: new Date(),
+            updated_at: new Date(),
+          })
+          .returning('*');
+        orgAdminRole = inserted;
+      }
+    } catch (_) {
+      const rolesList = mockStore.data?.roles || [];
+      orgAdminRole = rolesList.find((r) => r.slug === 'ORGANIZATION_ADMIN') || {
+        id: '55555555-5555-5555-5555-555555555520',
+        slug: 'ORGANIZATION_ADMIN',
+        name: 'Organization Administrator',
+      };
+    }
+
+    const passwordHash = await hashPassword(defaultPassword);
+    const nameParts = adminName.trim().split(' ');
+    const firstName = nameParts[0] || 'Org';
+    const lastName = nameParts.slice(1).join(' ') || 'Admin';
+
     const existingUser = await usersModel.findByEmail(adminEmail);
     if (!existingUser) {
-      let orgAdminRole = null;
-      try {
-        orgAdminRole = await db('roles')
-          .where('slug', 'ORGANIZATION_ADMIN')
-          .orWhere('slug', 'ORG_ADMIN')
-          .first();
-
-        if (!orgAdminRole) {
-          const { randomUUID } = require('crypto');
-          const [inserted] = await db('roles')
-            .insert({
-              id: randomUUID(),
-              name: 'Organization Administrator',
-              slug: 'ORGANIZATION_ADMIN',
-              display_name: 'Organization Admin',
-              description: 'Tenant Organization Administrator managing organization vendors, users, campaigns, and operations.',
-              is_system: true,
-              permissions: JSON.stringify([
-                'tenancy:*',
-                'organizations:read',
-                'clients:*',
-                'vendors:*',
-                'projects:*',
-                'users:*',
-                'questionnaires:*',
-                'submissions:*',
-                'capi:*',
-                'super_audit:*',
-                'tvc:*',
-                'fa:*',
-                'reports:*',
-                'audit_logs:read',
-              ]),
-              created_at: new Date(),
-              updated_at: new Date(),
-            })
-            .returning('*');
-          orgAdminRole = inserted;
-        }
-      } catch (_) {
-        const rolesList = mockStore.data?.roles || [];
-        orgAdminRole = rolesList.find((r) => r.slug === 'ORGANIZATION_ADMIN') || {
-          id: '55555555-5555-5555-5555-555555555520',
-          slug: 'ORGANIZATION_ADMIN',
-          name: 'Organization Administrator',
-        };
-      }
-
-      const passwordHash = await hashPassword(defaultPassword);
-      const nameParts = adminName.trim().split(' ');
-      const firstName = nameParts[0] || 'Org';
-      const lastName = nameParts.slice(1).join(' ') || 'Admin';
-
       const newAdminUser = await usersModel.create({
         email: adminEmail,
         password_hash: passwordHash,
@@ -157,6 +158,25 @@ const createOrganization = async (data, tenantContext = {}) => {
         role: orgAdminRole?.slug || 'ORGANIZATION_ADMIN',
         defaultPassword,
         note: 'Organization Administrator account successfully provisioned with full tenant rights.',
+      };
+    } else {
+      // If user exists, update their organization, role and password so login is guaranteed to work!
+      await usersModel.update(existingUser.id, {
+        organization_id: createdOrg.id,
+        role_id: orgAdminRole?.id || existingUser.role_id,
+        password_hash: passwordHash,
+        status: 'ACTIVE',
+        deleted_at: null,
+      });
+
+      createdOrg.adminUser = {
+        id: existingUser.id,
+        email: adminEmail,
+        firstName: existingUser.first_name || firstName,
+        lastName: existingUser.last_name || lastName,
+        role: orgAdminRole?.slug || 'ORGANIZATION_ADMIN',
+        defaultPassword,
+        note: 'Existing user updated with Organization Administrator rights.',
       };
     }
   } catch (userErr) {

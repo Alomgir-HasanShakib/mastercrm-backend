@@ -2728,6 +2728,8 @@ const mockStore = {
     return {
       ...user,
       role_name: role.name,
+      role_slug: role.slug || 'ORGANIZATION_ADMIN',
+      role: role.slug || 'ORGANIZATION_ADMIN',
       role_display_name: role.display_name,
       role_permissions: role.permissions,
       vendor_name: vendor.name,
