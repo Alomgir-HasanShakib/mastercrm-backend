@@ -9,7 +9,7 @@ const http = require('http');
 const app = require('./app');
 const config = require('./config');
 const logger = require('./utils/logger');
-const { db, checkDatabaseHealth, closeDatabase } = require('./database/connection');
+const { db, checkDatabaseHealth, ensureDatabaseSchema, closeDatabase } = require('./database/connection');
 const { initRedis, checkRedisHealth, closeRedis } = require('./config/redisClient');
 const { initSocketServer, closeSocketServer } = require('./modules/realtime');
 const { startSyncWorker, stopSyncWorker } = require('./modules/client-db/clientDbSync.service');
@@ -33,6 +33,8 @@ async function startServer() {
     const dbHealth = await checkDatabaseHealth();
     if (dbHealth.status === 'healthy') {
       logger.info(`PostgreSQL database connected successfully (latency: ${dbHealth.latencyMs}ms).`);
+      // Auto-run Knex migrations and default admin seed on newly connected databases
+      await ensureDatabaseSchema();
     } else {
       logger.warn(`PostgreSQL connection check reported: ${dbHealth.error || 'unhealthy'}. Server will still boot.`);
     }

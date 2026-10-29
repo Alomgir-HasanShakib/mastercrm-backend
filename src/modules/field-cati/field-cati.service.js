@@ -25,35 +25,52 @@ if (!fs.existsSync(RECORDINGS_DIR)) {
   fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
 }
 
-// BullMQ Queue setup for AI Pre-processing pipeline
+// BullMQ Queue setup for AI Pre-processing pipeline (gracefully skipped if Redis not configured)
 let aiProcessingQueue = null;
-try {
-  const redisOptions = {
-    host: config.redis.host,
-    port: config.redis.port,
-    password: config.redis.password || undefined,
-    db: config.redis.db,
-    maxRetriesPerRequest: null,
-  };
+const isRedisConfigured =
+  process.env.REDIS_ENABLED === 'true' ||
+  Boolean(process.env.REDIS_URL) ||
+  (config.redis.host && config.redis.host !== 'localhost' && config.redis.host !== '127.0.0.1');
 
-  aiProcessingQueue = new Queue('ai-preprocessing', {
-    connection: redisOptions,
-    defaultJobOptions: {
-      attempts: 3,
-      backoff: {
-        type: 'exponential',
-        delay: 5000,
+if (isRedisConfigured) {
+  try {
+    const redisOptions = {
+      host: config.redis.host,
+      port: config.redis.port,
+      password: config.redis.password || undefined,
+      db: config.redis.db,
+      maxRetriesPerRequest: null,
+      retryStrategy(times) {
+        if (times > 2) return null;
+        return 2000;
       },
-      removeOnComplete: 100,
-      removeOnFail: 500,
-    },
-  });
+    };
 
-  aiProcessingQueue.on('error', (err) => {
-    logger.warn('AI Pre-processing BullMQ Queue connection warning:', { message: err.message });
-  });
-} catch (queueErr) {
-  logger.warn('Could not initialize BullMQ AI queue, fallback enabled:', { message: queueErr.message });
+    aiProcessingQueue = new Queue('ai-preprocessing', {
+      connection: redisOptions,
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 5000,
+        },
+        removeOnComplete: 100,
+        removeOnFail: 500,
+      },
+    });
+
+    let hasLoggedQueueWarning = false;
+    aiProcessingQueue.on('error', (err) => {
+      if (!hasLoggedQueueWarning) {
+        logger.warn('AI Pre-processing BullMQ Queue connection warning:', { message: err.message });
+        hasLoggedQueueWarning = true;
+      }
+    });
+  } catch (queueErr) {
+    logger.warn('Could not initialize BullMQ AI queue, fallback enabled:', { message: queueErr.message });
+  }
+} else {
+  logger.debug('[Field CATI] Running AI processing in lightweight asynchronous fallback mode (Redis inactive).');
 }
 
 /**

@@ -4,6 +4,7 @@
  */
 
 const knex = require('knex');
+const path = require('path');
 const config = require('../config');
 
 const environment = config.app.env || 'development';
@@ -34,11 +35,11 @@ const dbConfig = {
     acquireTimeoutMillis: config.db.timeout || 60000,
   },
   migrations: {
-    directory: './src/database/migrations',
+    directory: path.resolve(__dirname, './migrations'),
     tableName: 'knex_migrations',
   },
   seeds: {
-    directory: './src/database/seeds',
+    directory: path.resolve(__dirname, './seeds'),
   },
 };
 
@@ -73,6 +74,39 @@ async function checkDatabaseHealth() {
       latencyMs: Date.now() - startTime,
       error: error.message,
     };
+  }
+}
+
+/**
+ * Automatically applies pending migrations and seeds default admin if the database is uninitialized
+ */
+async function ensureDatabaseSchema() {
+  if (!_isDbHealthy) {
+    return false;
+  }
+  try {
+    const hasOrgTable = await db.schema.hasTable('organizations');
+    if (!hasOrgTable) {
+      console.log('[Database] Schema uninitialized. Automatically running Knex migrations...');
+      await db.migrate.latest({
+        directory: path.resolve(__dirname, './migrations'),
+      });
+      console.log('[Database] Migrations applied successfully. Seeding default roles & super admin...');
+      await db.seed.run({
+        directory: path.resolve(__dirname, './seeds'),
+      });
+      console.log('[Database] Master Super Admin seeded successfully: admin@mastercrm.com / Password123!');
+      return true;
+    } else {
+      // Run any pending incremental migrations
+      await db.migrate.latest({
+        directory: path.resolve(__dirname, './migrations'),
+      });
+      return true;
+    }
+  } catch (err) {
+    console.warn('[Database] Auto-migration check notice:', err.message);
+    return false;
   }
 }
 
@@ -154,9 +188,12 @@ db.markDbUnhealthy = markDbUnhealthy;
 db.markDbHealthy = markDbHealthy;
 db.withDbFallback = withDbFallback;
 
+db.ensureDatabaseSchema = ensureDatabaseSchema;
+
 module.exports = db;
 module.exports.db = db;
 module.exports.checkDatabaseHealth = checkDatabaseHealth;
+module.exports.ensureDatabaseSchema = ensureDatabaseSchema;
 module.exports.closeDatabase = closeDatabase;
 module.exports.isDbHealthy = isDbHealthy;
 module.exports.markDbUnhealthy = markDbUnhealthy;
