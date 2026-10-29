@@ -102,8 +102,64 @@ async function ensureDatabaseSchema() {
       await db.migrate.latest({
         directory: path.resolve(__dirname, './migrations'),
       });
-      return true;
     }
+
+    // Ensure ORGANIZATION_ADMIN role exists and fix any users incorrectly marked as CLIENT_ADMIN
+    const hasRolesTable = await db.schema.hasTable('roles');
+    if (hasRolesTable) {
+      let orgAdminRole = await db('roles').where('slug', 'ORGANIZATION_ADMIN').first();
+      if (!orgAdminRole) {
+        const { randomUUID } = require('crypto');
+        const [inserted] = await db('roles')
+          .insert({
+            id: randomUUID(),
+            name: 'Organization Administrator',
+            slug: 'ORGANIZATION_ADMIN',
+            display_name: 'Organization Admin',
+            description: 'Tenant Organization Administrator managing organization vendors, users, campaigns, and operations.',
+            is_system: true,
+            permissions: JSON.stringify([
+              'tenancy:*',
+              'organizations:read',
+              'clients:*',
+              'vendors:*',
+              'projects:*',
+              'users:*',
+              'questionnaires:*',
+              'submissions:*',
+              'capi:*',
+              'super_audit:*',
+              'tvc:*',
+              'fa:*',
+              'reports:*',
+              'audit_logs:read',
+            ]),
+            created_at: new Date(),
+            updated_at: new Date(),
+          })
+          .returning('*');
+        orgAdminRole = inserted;
+        console.log('[Database] Verified and provisioned ORGANIZATION_ADMIN role.');
+      }
+
+      // Auto-migrate any existing organization administrators who were created as CLIENT_ADMIN
+      const clientAdminRole = await db('roles').where('slug', 'CLIENT_ADMIN').first();
+      if (orgAdminRole && clientAdminRole) {
+        const fixedUsersCount = await db('users')
+          .where('role_id', clientAdminRole.id)
+          .whereNotNull('organization_id')
+          .whereNull('vendor_id')
+          .update({
+            role_id: orgAdminRole.id,
+            updated_at: new Date(),
+          });
+        if (fixedUsersCount > 0) {
+          console.log(`[Database] Auto-migrated ${fixedUsersCount} organization admin user(s) from CLIENT_ADMIN to ORGANIZATION_ADMIN.`);
+        }
+      }
+    }
+
+    return true;
   } catch (err) {
     console.warn('[Database] Auto-migration check notice:', err.message);
     return false;

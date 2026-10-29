@@ -26,6 +26,7 @@ const PROJECT_1_ID = '44444444-4444-4444-4444-444444444441';
 const PROJECT_2_ID = '44444444-4444-4444-4444-444444444442';
 
 const ROLE_MASTER_ADMIN_ID = '55555555-5555-5555-5555-555555555501';
+const ROLE_ORGANIZATION_ADMIN_ID = '55555555-5555-5555-5555-555555555520';
 const ROLE_CLIENT_ADMIN_ID = '55555555-5555-5555-5555-555555555502';
 const ROLE_VENDOR_ADMIN_ID = '55555555-5555-5555-5555-555555555503';
 const ROLE_PM_ID = '55555555-5555-5555-5555-555555555504';
@@ -225,6 +226,7 @@ const store = {
   // 2. Roles & Permissions
   roles: [
     { id: ROLE_MASTER_ADMIN_ID, name: 'Master Administrator', slug: 'MASTER_ADMIN', display_name: 'Master Admin', is_system: true, permissions: JSON.stringify(['*:*']) },
+    { id: ROLE_ORGANIZATION_ADMIN_ID, name: 'Organization Administrator', slug: 'ORGANIZATION_ADMIN', display_name: 'Organization Admin', is_system: true, permissions: JSON.stringify(['tenancy:*', 'organizations:read', 'clients:*', 'vendors:*', 'projects:*', 'users:*', 'questionnaires:*', 'submissions:*', 'capi:*', 'super_audit:*', 'tvc:*', 'fa:*', 'reports:*', 'audit_logs:read']) },
     { id: ROLE_CLIENT_ADMIN_ID, name: 'Client Administrator', slug: 'CLIENT_ADMIN', display_name: 'Client Admin', is_system: true, permissions: JSON.stringify(['clients:*', 'projects:*', 'reports:*', 'submissions:read']) },
     { id: ROLE_VENDOR_ADMIN_ID, name: 'Vendor Administrator', slug: 'VENDOR_ADMIN', display_name: 'Vendor Admin', is_system: true, permissions: JSON.stringify(['vendors:*', 'projects:read', 'users:*', 'submissions:*', 'reports:read']) },
     { id: ROLE_PM_ID, name: 'Project Manager', slug: 'PROJECT_MANAGER', display_name: 'Project Manager', is_system: true, permissions: JSON.stringify(['projects:*', 'submissions:*', 'capi_audit:*', 'super_audit:*', 'tvc:*', 'fa:*', 'reports:*']) },

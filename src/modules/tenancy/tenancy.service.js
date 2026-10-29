@@ -88,13 +88,49 @@ const createOrganization = async (data, tenantContext = {}) => {
       try {
         orgAdminRole = await db('roles')
           .where('slug', 'ORGANIZATION_ADMIN')
+          .orWhere('slug', 'ORG_ADMIN')
           .first();
+
         if (!orgAdminRole) {
-          orgAdminRole = await db('roles')
-            .where('slug', 'CLIENT_ADMIN')
-            .first();
+          const { randomUUID } = require('crypto');
+          const [inserted] = await db('roles')
+            .insert({
+              id: randomUUID(),
+              name: 'Organization Administrator',
+              slug: 'ORGANIZATION_ADMIN',
+              display_name: 'Organization Admin',
+              description: 'Tenant Organization Administrator managing organization vendors, users, campaigns, and operations.',
+              is_system: true,
+              permissions: JSON.stringify([
+                'tenancy:*',
+                'organizations:read',
+                'clients:*',
+                'vendors:*',
+                'projects:*',
+                'users:*',
+                'questionnaires:*',
+                'submissions:*',
+                'capi:*',
+                'super_audit:*',
+                'tvc:*',
+                'fa:*',
+                'reports:*',
+                'audit_logs:read',
+              ]),
+              created_at: new Date(),
+              updated_at: new Date(),
+            })
+            .returning('*');
+          orgAdminRole = inserted;
         }
-      } catch (_) {}
+      } catch (_) {
+        const rolesList = mockStore.data?.roles || [];
+        orgAdminRole = rolesList.find((r) => r.slug === 'ORGANIZATION_ADMIN') || {
+          id: '55555555-5555-5555-5555-555555555520',
+          slug: 'ORGANIZATION_ADMIN',
+          name: 'Organization Administrator',
+        };
+      }
 
       const passwordHash = await hashPassword(defaultPassword);
       const nameParts = adminName.trim().split(' ');
