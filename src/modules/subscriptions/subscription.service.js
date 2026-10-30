@@ -276,25 +276,25 @@ const getSubscriptionByOrg = async (organizationId, tenantContext = {}) => {
         .orderBy('created_at', 'desc')
         .first());
 
-      // If organization is active but has no subscription record yet, auto-provision active 1-year Enterprise SaaS subscription
+      // If organization is active but has no subscription record yet, auto-provision 3-day trial subscription
       if (!latestSub && org && (org.is_active !== false && org.status !== 'SUSPENDED' && org.status !== 'INACTIVE')) {
         const { randomUUID } = require('crypto');
         const startDate = new Date();
-        const endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000); // 1 year
+        const endDate = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000); // 3 days trial
         const autoSubPayload = {
           id: randomUUID(),
           organization_id: organizationId,
-          plan_name: 'Enterprise SaaS Suite',
-          base_price: 499.00,
-          ai_audit_price: 199.00,
-          total_price: 698.00,
+          plan_name: 'Trial License (3 Days)',
+          base_price: 0.00,
+          ai_audit_price: 0.00,
+          total_price: 0.00,
           currency: 'USD',
-          has_ai_audit: org.enable_ai_audit !== false,
-          billing_cycle: 'ANNUAL',
+          has_ai_audit: Boolean(org.enable_ai_audit),
+          billing_cycle: 'TRIAL',
           start_date: startDate,
           end_date: endDate,
           status: 'ACTIVE',
-          auto_renew: true,
+          auto_renew: false,
           created_at: new Date(),
           updated_at: new Date(),
         };
@@ -382,22 +382,22 @@ const getSubscriptionByOrg = async (organizationId, tenantContext = {}) => {
       const subs = (mockStore.data?.subscriptions || []).filter((s) => s.organization_id === organizationId);
       let latestSub = subs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0] || null;
       
-      // Auto-provision in mockStore if absent
+      // Auto-provision in mockStore if absent (3-Day Trial)
       if (!latestSub && org && org.is_active !== false) {
         latestSub = {
           id: 'mock-sub-' + organizationId,
           organization_id: organizationId,
-          plan_name: 'Enterprise SaaS Suite',
-          base_price: 499.00,
-          ai_audit_price: 199.00,
-          total_price: 698.00,
+          plan_name: 'Trial License (3 Days)',
+          base_price: 0.00,
+          ai_audit_price: 0.00,
+          total_price: 0.00,
           currency: 'USD',
           has_ai_audit: Boolean(org.enable_ai_audit),
-          billing_cycle: 'ANNUAL',
+          billing_cycle: 'TRIAL',
           start_date: new Date(),
-          end_date: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+          end_date: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000), // 3 days trial
           status: 'ACTIVE',
-          auto_renew: true,
+          auto_renew: false,
           created_at: new Date(),
           updated_at: new Date(),
         };
@@ -468,11 +468,13 @@ const createOrRenewSubscription = async (data = {}, tenantContext = {}) => {
   const planName = (data.planName || 'ENTERPRISE').toUpperCase();
   const billingCycle = (data.billingCycle || 'MONTHLY').toUpperCase();
   const currency = (data.currency || pricing.currency || 'USD').toUpperCase();
-  const hasAiAudit = data.hasAiAudit !== undefined ? Boolean(data.hasAiAudit) : true;
+  const hasAiAudit = data.hasAiAudit !== undefined
+    ? Boolean(data.hasAiAudit)
+    : (data.aiLicense !== undefined ? parseInt(data.aiLicense, 10) > 0 : false);
   const autoRenew = data.autoRenew !== undefined ? Boolean(data.autoRenew) : true;
   const userCapacity = parseInt(data.userCapacity || data.maxCreatedUsers || 50, 10);
   const userLicense = parseInt(data.userLicense || data.maxConcurrentSeats || data.maxSeats || 10, 10);
-  const aiLicense = parseInt(data.aiLicense || data.maxAiAuditors || data.auditAiQuota || 5, 10);
+  const aiLicense = hasAiAudit ? parseInt(data.aiLicense || data.maxAiAuditors || data.auditAiQuota || 2, 10) : 0;
 
   // Calculate pricing
   const basePrice = data.basePrice !== undefined ? parseFloat(data.basePrice) : pricing.basePrice;
@@ -509,11 +511,15 @@ const createOrRenewSubscription = async (data = {}, tenantContext = {}) => {
         startDate = new Date(currentSub.end_date);
       }
 
-      // Calculate end date based on billing cycle
-      const endDate = new Date(startDate);
-      if (billingCycle === 'ANNUAL') {
+      // Calculate end date based on billing cycle or explicit end date (e.g. 3-day trial)
+      let endDate;
+      if (data.endDate) {
+        endDate = new Date(data.endDate);
+      } else if (billingCycle === 'ANNUAL') {
+        endDate = new Date(startDate);
         endDate.setFullYear(endDate.getFullYear() + 1);
       } else {
+        endDate = new Date(startDate);
         endDate.setDate(endDate.getDate() + 30);
       }
 
@@ -660,7 +666,9 @@ const createOrRenewSubscription = async (data = {}, tenantContext = {}) => {
     () => {
       // Mock fallback
       const now = new Date();
-      const endDate = new Date(now.getTime() + (billingCycle === 'ANNUAL' ? 365 : 30) * 86400000);
+      const endDate = data.endDate
+        ? new Date(data.endDate)
+        : new Date(now.getTime() + (billingCycle === 'ANNUAL' ? 365 : 30) * 86400000);
       const subId = uuidv4();
       const invNum = `INV-2026-${Math.floor(100000 + Math.random() * 900000)}`;
       const recNum = `RCP-2026-${Math.floor(100000 + Math.random() * 900000)}`;
@@ -714,9 +722,12 @@ const createOrRenewSubscription = async (data = {}, tenantContext = {}) => {
 
       const orgItem = (mockStore.data?.organizations || []).find((o) => o.id === organizationId);
       if (orgItem) {
+        orgItem.enable_ai_audit = hasAiAudit;
+        orgItem.enableAiAudit = hasAiAudit;
         orgItem.max_created_users = userCapacity;
         orgItem.max_concurrent_human_seats = userLicense;
         orgItem.max_concurrent_seats = userLicense;
+        orgItem.max_ai_auditors = aiLicense;
       }
 
       return {

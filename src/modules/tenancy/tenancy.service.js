@@ -81,22 +81,23 @@ const createOrganization = async (data, tenantContext = {}) => {
   try {
     const subscriptionService = require('../subscriptions/subscription.service');
     const validityStart = data.validityStart ? new Date(data.validityStart) : new Date();
+    // Default trial period: strictly 3 days as requested by user
     const validityEnd = data.validityEnd
       ? new Date(data.validityEnd)
-      : new Date(Date.now() + 365 * 24 * 60 * 60 * 1000); // 1 year active license by default
+      : new Date(Date.now() + 3 * 24 * 60 * 60 * 1000); // 3 days trial license by default
 
     await subscriptionService.createOrRenewSubscription(
       {
         organizationId: createdOrg.id,
-        planName: 'Enterprise SaaS Suite',
-        billingCycle: 'ANNUAL',
-        hasAiAudit: createdOrg.enable_ai_audit !== false,
+        planName: 'Enterprise SaaS Suite (3-Day Trial)',
+        billingCycle: 'MONTHLY',
+        hasAiAudit: Boolean(createdOrg.enable_ai_audit),
         startDate: validityStart,
         endDate: validityEnd,
         status: 'ACTIVE',
         userCapacity: createdOrg.max_users || 50,
         userLicense: data.maxConcurrentSeats || 10,
-        aiLicense: data.auditAiLicenses || 5,
+        aiLicense: Boolean(createdOrg.enable_ai_audit) ? (data.auditAiLicenses || 2) : 0,
       },
       { isMasterAdmin: true }
     );

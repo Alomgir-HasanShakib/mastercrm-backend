@@ -225,6 +225,9 @@ const capiController = {
       if (projectId === 'undefined' || projectId === 'null' || (typeof projectId === 'string' && projectId.trim() === '')) {
         projectId = null;
       }
+      if (!projectId) {
+        return success(res, null, 'Please select a campaign to fetch pending audits');
+      }
       const audit = await capiService.getNextQueuedAudit(auditorId, projectId, req.tenantContext);
 
       if (!audit) {

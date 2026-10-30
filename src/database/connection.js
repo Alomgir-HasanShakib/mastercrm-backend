@@ -174,17 +174,17 @@ async function ensureDatabaseSchema() {
         await db('subscriptions').insert({
           id: randomUUID(),
           organization_id: org.id,
-          plan_name: 'Enterprise SaaS Suite',
-          base_price: 499.00,
-          ai_audit_price: 199.00,
-          total_price: 698.00,
+          plan_name: 'Trial License (3 Days)',
+          base_price: 0.00,
+          ai_audit_price: 0.00,
+          total_price: 0.00,
           currency: 'USD',
           has_ai_audit: Boolean(org.enable_ai_audit),
-          billing_cycle: 'ANNUAL',
+          billing_cycle: 'TRIAL',
           start_date: new Date(),
-          end_date: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000), // 1 year active license
+          end_date: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000), // 3 days trial
           status: 'ACTIVE',
-          auto_renew: true,
+          auto_renew: false,
           created_at: new Date(),
           updated_at: new Date(),
         });
