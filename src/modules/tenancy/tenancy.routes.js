@@ -61,7 +61,7 @@ router.post(
 
 router.put(
   '/organizations/:id',
-  checkRole('MASTER_ADMIN', 'ORGANIZATION_ADMIN', 'CLIENT_ADMIN', 'ORG_ADMIN'),
+  checkRole('MASTER_ADMIN'),
   validate(idParamSchema, 'params'),
   validate(updateOrganizationSchema, 'body'),
   tenancyController.updateOrganization
