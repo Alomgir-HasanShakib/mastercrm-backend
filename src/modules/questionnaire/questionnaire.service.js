@@ -275,17 +275,23 @@ const questionnaireService = {
       if ((Array.isArray(data.sections) && data.sections.length > 0) || (Array.isArray(data.questions) && data.questions.length > 0)) {
         try {
           await this.updateVersion(created.id, data);
-        } catch (_) {}
+        } catch (syncErr) {
+          console.warn('[createVersion initial sync notice]:', syncErr.message);
+        }
       }
       return created;
     } catch (createErr) {
       if (createErr && createErr.message && createErr.message.includes('questionnaire_module_enum') && moduleEnum === 'AI_AUDIT') {
         payload.module = 'SUPER_AUDIT';
+        const latestSuperAudit = await questionnaireModel.getLatestVersionNumber(projectId, 'SUPER_AUDIT');
+        payload.version_number = latestSuperAudit + 1;
         const created = await questionnaireModel.createVersion(payload);
         if ((Array.isArray(data.sections) && data.sections.length > 0) || (Array.isArray(data.questions) && data.questions.length > 0)) {
           try {
             await this.updateVersion(created.id, data);
-          } catch (_) {}
+          } catch (syncErr) {
+            console.warn('[createVersion fallback sync notice]:', syncErr.message);
+          }
         }
         return created;
       }
@@ -335,30 +341,53 @@ const questionnaireService = {
     }
 
     // Attach options and translations to questions
-    const formattedQuestions = questions.map((q) => {
+    const formattedQuestions = questions.map((q, idx) => {
       let meta = {};
       try {
         meta = typeof q.metadata === 'string' ? JSON.parse(q.metadata) : (q.metadata || {});
       } catch (_) {}
 
+      const rawOpts = optionsByQuestionId[q.id] || [];
+      const optsStrings = rawOpts.map((o) => o.label || o.value || '');
+
       return {
         ...q,
+        id: q.id,
+        sn: q.question_no || String(idx + 1),
+        questionNo: q.question_no || String(idx + 1),
+        question_no: q.question_no || String(idx + 1),
         code: q.question_tag,
+        tag: q.question_tag,
+        question_tag: q.question_tag,
         text: q.question_text,
+        questionText: q.question_text,
+        question_text: q.question_text,
         type: meta.originalType || q.question_type,
+        questionType: meta.originalType || q.question_type,
+        question_type: q.question_type,
         required: q.is_required,
+        is_required: q.is_required,
         helpText: q.help_text || '',
+        help_text: q.help_text || '',
         conditions: meta.conditions || [],
-        options: optionsByQuestionId[q.id] || [],
+        options: rawOpts,
         translations: questionTranslations.filter((t) => t.entity_id === q.id),
         metadata: meta,
-        toBeAudited: meta.toBeAudited || false,
-        inputColumn: meta.inputColumn || null,
-        questionValidationColumn: meta.questionValidationColumn || null,
-        answerValidationColumn: meta.answerValidationColumn || null,
-        actualColumn: meta.actualColumn || null,
+        toBeAudited: meta.toBeAudited !== undefined ? meta.toBeAudited : 'Yes',
+        questionVisible: meta.questionVisible !== undefined ? meta.questionVisible : 1,
+        inputColumnDiu: meta.inputColumnDiu || meta.inputColumn || '',
+        questionInputFromDiu: meta.questionInputFromDiu || '',
+        questionValidationColumn: meta.questionValidationColumn || '',
+        answerValidationColumn: meta.answerValidationColumn || '',
+        answerValidationColumn1: meta.answerValidationColumn1 || '',
+        answerValidationColumn2: meta.answerValidationColumn2 || '',
+        actualColumn: meta.actualColumn || '',
         questionValidationOptions: meta.questionValidationOptions || [],
-        answerValidationOptions: meta.answerValidationOptions || [],
+        answerValidationOptions: meta.answerValidationOptions?.length > 0 ? meta.answerValidationOptions : optsStrings,
+        answerValidationOptions1: meta.answerValidationOptions1 || [],
+        answerValidationOptions2: meta.answerValidationOptions2 || [],
+        condition: meta.condition || '',
+        superAuditCondition: meta.superAuditCondition || '',
       };
     });
 
@@ -387,6 +416,7 @@ const questionnaireService = {
 
     return {
       ...version,
+      questions: formattedQuestions,
       sections: formattedSections,
       unsectionedQuestions,
       totalQuestions: questions.length,
@@ -444,9 +474,13 @@ const questionnaireService = {
             }).returning('*');
 
             const questions = Array.isArray(sec.questions) ? sec.questions : [];
+            const secId = createdSec?.id || (typeof createdSec === 'string' ? createdSec : null);
+
             for (let qIdx = 0; qIdx < questions.length; qIdx++) {
               const q = questions[qIdx];
-              let qCode = (q.code || q.question_tag || `Q_${sIdx + 1}_${qIdx + 1}`).trim();
+              let qCode = (q.tag || q.code || q.question_tag || `Q_${sIdx + 1}_${qIdx + 1}`).trim();
+              if (!qCode) qCode = `Q_${sIdx + 1}_${qIdx + 1}`;
+              if (qCode.length > 95) qCode = qCode.slice(0, 95);
               if (usedQTags.has(qCode)) {
                 let c = 2;
                 while (usedQTags.has(`${qCode}_${c}`)) c++;
@@ -540,9 +574,9 @@ const questionnaireService = {
 
               const [createdQ] = await trx('questions').insert({
                 questionnaire_version_id: id,
-                section_id: createdSec.id,
-                question_no: q.questionNo || q.question_no || q.sn || `${sIdx + 1}.${qIdx + 1}`,
-                question_tag: q.tag || q.question_tag || qCode,
+                section_id: secId,
+                question_no: String(q.questionNo || q.question_no || q.sn || `${sIdx + 1}.${qIdx + 1}`).slice(0, 50),
+                question_tag: qCode,
                 question_type: qType,
                 question_text: q.questionText || q.question_text || q.text || q.q?.label || q.label || 'Untitled Question',
                 help_text: q.helpText || q.help_text || q.q?.help || null,
@@ -551,31 +585,41 @@ const questionnaireService = {
                 metadata: JSON.stringify(mergedMeta),
               }).returning('*');
 
-              const usedOptCodes = new Set();
-              for (let oIdx = 0; oIdx < options.length; oIdx++) {
-                const opt = options[oIdx];
-                const optLabel = typeof opt === 'string' ? opt : (opt.label || opt.value || `Option ${oIdx + 1}`);
-                const optValue = typeof opt === 'string' ? opt : (opt.value || opt.label || `opt_${oIdx + 1}`);
-                let optCode = (opt.code || opt.option_code || `OPT_${oIdx + 1}`).trim();
-                if (usedOptCodes.has(optCode)) {
-                  optCode = `${optCode}_${oIdx + 1}`;
-                }
-                usedOptCodes.add(optCode);
+              const qId = createdQ?.id || (typeof createdQ === 'string' ? createdQ : null);
+              if (qId) {
+                const usedOptCodes = new Set();
+                for (let oIdx = 0; oIdx < options.length; oIdx++) {
+                  const opt = options[oIdx];
+                  const optLabel = typeof opt === 'string' ? opt : (opt.label || opt.value || `Option ${oIdx + 1}`);
+                  const optValue = typeof opt === 'string' ? opt : (opt.value || opt.label || `opt_${oIdx + 1}`);
+                  let optCode = (opt.code || opt.option_code || `OPT_${oIdx + 1}`).trim();
+                  if (!optCode) optCode = `OPT_${oIdx + 1}`;
+                  if (optCode.length > 95) optCode = optCode.slice(0, 95);
+                  if (usedOptCodes.has(optCode)) {
+                    optCode = `${optCode}_${oIdx + 1}`;
+                  }
+                  usedOptCodes.add(optCode);
 
-                await trx('question_options').insert({
-                  question_id: createdQ.id,
-                  option_code: optCode,
-                  label: optLabel,
-                  value: optValue,
-                  display_order: opt.displayOrder || oIdx + 1,
-                  metadata: JSON.stringify(opt.metadata || {}),
-                });
+                  try {
+                    await trx('question_options').insert({
+                      question_id: qId,
+                      option_code: optCode,
+                      label: String(optLabel || '').slice(0, 255),
+                      value: String(optValue || '').slice(0, 255),
+                      display_order: opt.displayOrder || oIdx + 1,
+                      metadata: JSON.stringify(opt.metadata || {}),
+                    });
+                  } catch (optErr) {
+                    console.warn('[question_options insert notice]:', optErr.message);
+                  }
+                }
               }
             }
           }
         }
       });
     } catch (dbErr) {
+      console.error('[updateVersion DB ERROR]:', dbErr);
       // MockStore in-memory fallback for local execution when DB is offline
       const qv = (mockStore.data?.questionnaire_versions || []).find((q) => q.id === id);
       if (qv) {

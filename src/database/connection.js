@@ -104,6 +104,23 @@ async function ensureDatabaseSchema() {
       });
     }
 
+    // Ensure questionnaire_module_enum in PostgreSQL includes AI_AUDIT
+    try {
+      await db.raw(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_type typ
+            JOIN pg_enum enm ON typ.oid = enm.enumtypid
+            WHERE typ.typname = 'questionnaire_module_enum'
+            AND enm.enumlabel = 'AI_AUDIT'
+          ) THEN
+            ALTER TYPE questionnaire_module_enum ADD VALUE 'AI_AUDIT';
+          END IF;
+        END$$;
+      `);
+    } catch (_) {}
+
     // Ensure ORGANIZATION_ADMIN role exists and fix any users incorrectly marked as CLIENT_ADMIN
     const hasRolesTable = await db.schema.hasTable('roles');
     if (hasRolesTable) {
