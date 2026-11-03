@@ -20,35 +20,81 @@ const questionnaireModel = {
   async findVersions(filters = {}) {
     return withDbFallback(
       async () => {
-        let query = db('questionnaire_versions')
-          .select(
-            'questionnaire_versions.*',
-            'projects.name as project_name',
-            'projects.project_code as project_code',
-            db.raw('(SELECT COUNT(*) FROM sections WHERE sections.questionnaire_version_id = questionnaire_versions.id)::int as sections_count'),
-            db.raw('(SELECT COUNT(*) FROM questions WHERE questions.questionnaire_version_id = questionnaire_versions.id)::int as questions_count')
-          )
-          .leftJoin('projects', 'questionnaire_versions.project_id', 'projects.id')
-          .orderBy('questionnaire_versions.created_at', 'desc');
+        try {
+          let query = db('questionnaire_versions')
+            .select(
+              'questionnaire_versions.*',
+              'projects.name as project_name',
+              'projects.project_code as project_code'
+            )
+            .leftJoin('projects', 'questionnaire_versions.project_id', 'projects.id')
+            .orderBy('questionnaire_versions.created_at', 'desc');
 
-        if (filters.projectId) {
-          query = query.where('questionnaire_versions.project_id', filters.projectId);
-        }
-        if (filters.module) {
-          query = query.where('questionnaire_versions.module', filters.module);
-        }
-        if (filters.status) {
-          query = query.where('questionnaire_versions.status', filters.status);
-        }
+          if (filters.projectId) {
+            query = query.where('questionnaire_versions.project_id', filters.projectId);
+          }
+          if (filters.module) {
+            query = query.where('questionnaire_versions.module', filters.module);
+          }
+          if (filters.status) {
+            query = query.where('questionnaire_versions.status', filters.status);
+          }
 
-        return query;
+          const rows = await query;
+
+          // Safe section and question count resolution
+          const versionIds = rows.map((r) => r.id);
+          const secCounts = {};
+          const qCounts = {};
+
+          if (versionIds.length > 0) {
+            try {
+              const secRes = await db('sections')
+                .whereIn('questionnaire_version_id', versionIds)
+                .groupBy('questionnaire_version_id')
+                .select('questionnaire_version_id', db.raw('COUNT(*)::int as count'));
+              secRes.forEach((s) => {
+                secCounts[s.questionnaire_version_id] = s.count;
+              });
+            } catch (_) {}
+
+            try {
+              const qRes = await db('questions')
+                .whereIn('questionnaire_version_id', versionIds)
+                .groupBy('questionnaire_version_id')
+                .select('questionnaire_version_id', db.raw('COUNT(*)::int as count'));
+              qRes.forEach((q) => {
+                qCounts[q.questionnaire_version_id] = q.count;
+              });
+            } catch (_) {}
+          }
+
+          return rows.map((r) => ({
+            ...r,
+            sections_count: secCounts[r.id] || 0,
+            questions_count: qCounts[r.id] || 0,
+          }));
+        } catch (dbErr) {
+          console.warn('[findVersions DB Error, trying simple query]:', dbErr.message);
+          let simpleQuery = db('questionnaire_versions').orderBy('created_at', 'desc');
+          if (filters.module) simpleQuery = simpleQuery.where({ module: filters.module });
+          if (filters.status) simpleQuery = simpleQuery.where({ status: filters.status });
+          const simpleRows = await simpleQuery;
+          return simpleRows.map((r) => ({
+            ...r,
+            project_name: '—',
+            project_code: '—',
+            sections_count: 0,
+            questions_count: 0,
+          }));
+        }
       },
       () => {
         const versions = mockStore.find('questionnaire_versions', filters);
         return versions.map((qv) => {
           const proj = mockStore.findById('projects', qv.project_id) || {};
-          const secCount = (mockStore.data?.sections || []).filter(s => s.questionnaire_version_id === qv.id).length;
-          const qCount = (mockStore.data?.questions || []).filter(q => q.questionnaire_version_id === qv.id).length;
+          const secCount = (mockStore.data?.sections || []).filter((s) => s.questionnaire_version_id === qv.id).length;
+          const qCount = (mockStore.data?.questions || []).filter((q) => q.questionnaire_version_id === qv.id).length;
           return {
             ...qv,
             project_name: proj.name,
