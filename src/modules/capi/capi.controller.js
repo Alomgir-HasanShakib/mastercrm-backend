@@ -280,12 +280,13 @@ const capiController = {
    */
   async startAiAudit(req, res, next) {
     try {
-      const { concurrency = 5, projectId = null } = req.body || {};
+      const { concurrency = 5, projectId = null, bypassCutoff = true } = req.body || {};
       const status = await aiWorkerPool.startWorkerPool({
         concurrency: parseInt(concurrency, 10) || 5,
         projectId,
         organizationId: req.user?.organization_id,
         user: req.user,
+        bypassCutoff: bypassCutoff ?? true,
       });
 
       await auditLogService.createAuditLog({

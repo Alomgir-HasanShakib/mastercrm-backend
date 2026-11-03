@@ -1185,7 +1185,7 @@ const createProject = async (data) => {
         description: data.description || null,
         type: data.type || 'SURVEY',
         status: data.status || 'DRAFT',
-        enabled_modules: JSON.stringify(data.enabledModules || ['CATI', 'CAPI', 'SUPER_AUDIT', 'TVC', 'FA', 'EXAM']),
+        enabled_modules: JSON.stringify(data.enabledModules || ['CAPI', 'CATI', 'SUPER_AUDIT', 'AI_AUDIT', 'TVC', 'FA']),
         states: JSON.stringify(data.states || []),
         languages: JSON.stringify(data.languages || ['en']),
         config: JSON.stringify({

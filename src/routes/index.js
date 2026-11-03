@@ -138,6 +138,8 @@ router.use('/submissions', ...subscriptionGate, submissionsRoutes);
 // Operations: CAPI, Super Audit, TVC, Feedback, Dialer, Realtime, Rechain Operations
 router.use('/operations', ...subscriptionGate, operationsRoutes);
 router.use('/capi', ...subscriptionGate, requireModuleEnabled('CAPI'), capiRoutes);
+router.use('/ai-audit', ...subscriptionGate, requireModuleEnabled('AI_AUDIT'), capiRoutes);
+router.use('/ai-audits', ...subscriptionGate, requireModuleEnabled('AI_AUDIT'), capiRoutes);
 router.use('/super-audit', ...subscriptionGate, requireModuleEnabled('SUPER_AUDIT'), superAuditRoutes);
 router.use('/tvc', ...subscriptionGate, requireModuleEnabled('TVC'), tvcRoutes);
 router.use('/feedback', ...subscriptionGate, requireModuleEnabled('FA'), feedbackRoutes);

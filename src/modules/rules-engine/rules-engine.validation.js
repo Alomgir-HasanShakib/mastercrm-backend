@@ -11,7 +11,7 @@ const idParamSchema = Joi.object({
 
 const listRulesQuerySchema = Joi.object({
   projectId: Joi.string().uuid().optional(),
-  module: Joi.string().valid('CATI', 'CAPI', 'SUPER_AUDIT', 'TVC', 'FA', 'EXAM').optional(),
+  module: Joi.string().valid('CAPI', 'CATI', 'SUPER_AUDIT', 'AI_AUDIT', 'TVC', 'FA', 'AUDIT').optional(),
   scope: Joi.string().valid('QUESTION', 'SECTION', 'SUBMISSION', 'ROUTING').optional(),
   isEnabled: Joi.boolean().optional(),
 });
@@ -66,7 +66,7 @@ const actionItemSchema = Joi.object({
 
 const createRuleSchema = Joi.object({
   projectId: Joi.string().uuid().required(),
-  module: Joi.string().valid('CATI', 'CAPI', 'SUPER_AUDIT', 'TVC', 'FA', 'EXAM').required(),
+  module: Joi.string().valid('CAPI', 'CATI', 'SUPER_AUDIT', 'AI_AUDIT', 'TVC', 'FA', 'AUDIT').required(),
   scope: Joi.string().valid('QUESTION', 'SECTION', 'SUBMISSION', 'ROUTING').required(),
   ruleCode: Joi.string().max(100).required(),
   conditionAst: conditionAstSchema.required(),
@@ -94,7 +94,7 @@ const testRuleSchema = Joi.object({
 
 const evaluateSchema = Joi.object({
   projectId: Joi.string().uuid().required(),
-  module: Joi.string().valid('CATI', 'CAPI', 'SUPER_AUDIT', 'TVC', 'FA', 'EXAM').required(),
+  module: Joi.string().valid('CAPI', 'CATI', 'SUPER_AUDIT', 'AI_AUDIT', 'TVC', 'FA', 'AUDIT').required(),
   questionnaireVersionId: Joi.string().uuid().optional(),
   context: Joi.object().required(), // { answers: { [tag]: val }, tags: {}, context: {} }
 });

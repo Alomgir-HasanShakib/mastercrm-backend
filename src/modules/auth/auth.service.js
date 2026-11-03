@@ -84,7 +84,7 @@ const enrichUserWithOrgDetails = async (user) => {
     } catch (_) {}
   }
 
-  const defaultModules = ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'];
+  const defaultModules = ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT', 'AI_AUDIT', 'AUDIT'];
   let enabledModules = org?.enabled_modules || defaultModules;
   if (typeof enabledModules === 'string') {
     try {
@@ -141,6 +141,55 @@ const enrichUserWithOrgDetails = async (user) => {
 };
 
 const DEMO_ACCOUNTS = {
+  'alomgirhasanshakib@gmail.com': {
+    id: '66666666-6666-6666-6666-666666666602',
+    email: 'alomgirhasanshakib@gmail.com',
+    first_name: 'Dhuldiar',
+    last_name: 'Admin',
+    role: 'ORGANIZATION_ADMIN',
+    role_name: 'ORGANIZATION_ADMIN',
+    organization_id: '11111111-1111-1111-1111-111111111111',
+    vendor_id: null,
+    status: 'ACTIVE',
+    enable_ai_audit: true,
+    permissions: ['*'],
+  },
+  'sourov@gmail.com': {
+    id: '66666666-6666-6666-6666-666666666603',
+    email: 'sourov@gmail.com',
+    first_name: 'Sourov',
+    last_name: 'Maji',
+    role: 'VENDOR_ADMIN',
+    role_name: 'VENDOR_ADMIN',
+    organization_id: '11111111-1111-1111-1111-111111111111',
+    vendor_id: '33333333-3333-3333-3333-333333333331',
+    status: 'ACTIVE',
+    permissions: ['vendors:*', 'projects:read', 'users:*', 'submissions:*', 'tvc:*', 'capi:*', 'realtime:*'],
+  },
+  'archi@gmail.com': {
+    id: '66666666-6666-6666-6666-666666666606',
+    email: 'archi@gmail.com',
+    first_name: 'Archisman',
+    last_name: 'Kumar',
+    role: 'CAPI_AUDITOR',
+    role_name: 'CAPI_AUDITOR',
+    organization_id: '11111111-1111-1111-1111-111111111111',
+    vendor_id: '33333333-3333-3333-3333-333333333331',
+    status: 'ACTIVE',
+    permissions: ['capi:*', 'exam:*', 'submissions:*', 'operations:*', 'realtime:*'],
+  },
+  'shakib@gmail.com': {
+    id: '66666666-6666-6666-6666-666666666608',
+    email: 'shakib@gmail.com',
+    first_name: 'shakib',
+    last_name: 'khan',
+    role: 'TVC_AGENT',
+    role_name: 'TVC_AGENT',
+    organization_id: '11111111-1111-1111-1111-111111111111',
+    vendor_id: '33333333-3333-3333-3333-333333333331',
+    status: 'ACTIVE',
+    permissions: ['tvc:*', 'dialer:*', 'submissions:*', 'operations:*', 'realtime:*'],
+  },
   'admin@mastercrm.com': {
     id: '66666666-6666-6666-6666-666666666601',
     email: 'admin@mastercrm.com',

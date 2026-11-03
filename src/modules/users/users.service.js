@@ -186,7 +186,7 @@ const createUser = async (userData, tenantContext = {}) => {
   }
 
   if (!roleId && slug) {
-    const rolesList = mockStore.data?.roles || [];
+    const rolesList = mockStore.roles || mockStore.data?.roles || [];
     const roleMatch = rolesList.find((r) => r.slug === slug || r.name.toLowerCase() === slug.toLowerCase());
     if (roleMatch) roleId = roleMatch.id;
   }

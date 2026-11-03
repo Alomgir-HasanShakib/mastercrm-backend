@@ -35,23 +35,43 @@ const translationEntityParamsSchema = Joi.object({
 });
 
 const listVersionsQuerySchema = Joi.object({
-  projectId: Joi.string().uuid().optional(),
-  module: Joi.string().valid('CATI', 'CAPI', 'SUPER_AUDIT', 'TVC', 'FA', 'EXAM').optional(),
+  projectId: Joi.string().uuid().allow('', null).optional(),
+  module: Joi.string().valid('CAPI', 'CATI', 'SUPER_AUDIT', 'AI_AUDIT', 'TVC', 'FA', 'AUDIT', 'CAPI_CATI').optional(),
   status: Joi.string().valid('DRAFT', 'PUBLISHED', 'RETIRED').optional(),
-});
+}).unknown(true);
 
 const createVersionSchema = Joi.object({
-  projectId: Joi.string().uuid().optional(),
-  module: Joi.string().valid('CATI', 'CAPI', 'SUPER_AUDIT', 'TVC', 'FA', 'EXAM').required(),
-  name: Joi.string().max(255).required(),
-});
+  projectId: Joi.string().max(100).allow('', null).optional(),
+  project_id: Joi.string().max(100).allow('', null).optional(),
+  campaign_id: Joi.string().max(100).allow('', null).optional(),
+  module: Joi.string().trim().uppercase().valid('CAPI', 'CATI', 'SUPER_AUDIT', 'AI_AUDIT', 'TVC', 'FA', 'AUDIT', 'CAPI_CATI').required(),
+  name: Joi.string().max(255).allow('', null).optional().default('Untitled Questionnaire'),
+  title: Joi.string().max(255).allow('', null).optional(),
+  questions: Joi.array().optional(),
+  sections: Joi.array().optional(),
+  openingScript: Joi.string().allow('', null).optional(),
+  closingScript: Joi.string().allow('', null).optional(),
+  closureScript: Joi.string().allow('', null).optional(),
+  checkpoints: Joi.array().optional(),
+  status: Joi.string().valid('DRAFT', 'PUBLISHED', 'RETIRED').optional(),
+  updatedAt: Joi.any().optional(),
+}).unknown(true);
 
 const updateVersionSchema = Joi.object({
-  name: Joi.string().max(255).optional(),
-  title: Joi.string().max(255).optional(),
+  name: Joi.string().max(255).allow('', null).optional(),
+  title: Joi.string().max(255).allow('', null).optional(),
+  module: Joi.string().trim().uppercase().valid('CAPI', 'CATI', 'SUPER_AUDIT', 'AI_AUDIT', 'TVC', 'FA', 'AUDIT', 'CAPI_CATI').optional(),
+  projectId: Joi.string().max(100).allow('', null).optional(),
+  project_id: Joi.string().max(100).allow('', null).optional(),
   sections: Joi.array().optional(),
+  questions: Joi.array().optional(),
+  openingScript: Joi.string().allow('', null).optional(),
+  closingScript: Joi.string().allow('', null).optional(),
+  closureScript: Joi.string().allow('', null).optional(),
+  checkpoints: Joi.array().optional(),
   status: Joi.string().valid('DRAFT', 'PUBLISHED', 'RETIRED').optional(),
-}).min(1);
+  updatedAt: Joi.any().optional(),
+}).unknown(true);
 
 const createSectionSchema = Joi.object({
   code: Joi.string().max(50).required(),
@@ -78,8 +98,9 @@ const reorderSectionsSchema = Joi.object({
 
 const createQuestionSchema = Joi.object({
   sectionId: Joi.string().uuid().allow(null).optional(),
-  questionNo: Joi.string().max(50).required(),
-  questionTag: Joi.string().max(100).required(),
+  questionNo: Joi.string().max(100).allow('', null).optional(),
+  questionTag: Joi.string().max(100).allow('', null).optional(),
+  questionCode: Joi.string().max(100).allow('', null).optional(),
   questionType: Joi.string().valid(
     'SINGLE_SELECT',
     'MULTI_SELECT',
@@ -93,8 +114,8 @@ const createQuestionSchema = Joi.object({
     'CONSENT',
     'INFO_BLOCK',
     'HIDDEN'
-  ).required(),
-  questionText: Joi.string().required(),
+  ).optional().default('SINGLE_SELECT'),
+  questionText: Joi.string().allow('', null).optional(),
   helpText: Joi.string().allow('', null).optional(),
   isRequired: Joi.boolean().default(false),
   displayOrder: Joi.number().integer().min(0).default(0),
@@ -116,12 +137,13 @@ const createQuestionSchema = Joi.object({
       metadata: Joi.object().default({}),
     })
   ).optional(),
-});
+}).unknown(true);
 
 const updateQuestionSchema = Joi.object({
   sectionId: Joi.string().uuid().allow(null).optional(),
-  questionNo: Joi.string().max(50).optional(),
-  questionTag: Joi.string().max(100).optional(),
+  questionNo: Joi.string().max(100).allow('', null).optional(),
+  questionTag: Joi.string().max(100).allow('', null).optional(),
+  questionCode: Joi.string().max(100).allow('', null).optional(),
   questionType: Joi.string().valid(
     'SINGLE_SELECT',
     'MULTI_SELECT',
@@ -136,7 +158,7 @@ const updateQuestionSchema = Joi.object({
     'INFO_BLOCK',
     'HIDDEN'
   ).optional(),
-  questionText: Joi.string().optional(),
+  questionText: Joi.string().allow('', null).optional(),
   helpText: Joi.string().allow('', null).optional(),
   isRequired: Joi.boolean().optional(),
   displayOrder: Joi.number().integer().min(0).optional(),
@@ -149,7 +171,7 @@ const updateQuestionSchema = Joi.object({
   validationRules: Joi.object().optional(),
   metadata: Joi.object().optional(),
   isEnabled: Joi.boolean().optional(),
-}).min(1);
+}).unknown(true);
 
 const reorderQuestionsSchema = Joi.object({
   items: Joi.array().items(

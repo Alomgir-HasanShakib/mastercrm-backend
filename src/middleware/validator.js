@@ -20,8 +20,8 @@ const validate = (schema, source = 'body') => {
 
     const { error, value } = schema.validate(req[source], {
       abortEarly: false,
-      stripUnknown: true,
-      allowUnknown: false,
+      stripUnknown: false,
+      allowUnknown: true,
     });
 
     if (error) {

@@ -81,14 +81,17 @@ const requireActiveSubscription = async (req, res, next) => {
       // Check if the organization itself is active in the organizations table
       const org = await withDbFallback(
         () => db('organizations').where('id', organizationId).first(),
-        () => (mockStore.data?.organizations || []).find((o) => o.id === organizationId)
+        () => {
+          const orgs = mockStore.organizations || mockStore.data?.organizations || [];
+          return orgs.find((o) => o.id === organizationId || o.code === organizationId || o.slug === organizationId) || orgs[0];
+        }
       );
 
       if (org && org.is_active !== false && org.status !== 'SUSPENDED' && org.status !== 'INACTIVE') {
         const { randomUUID } = require('crypto');
         const autoSub = {
           id: randomUUID(),
-          organization_id: organizationId,
+          organization_id: organizationId || org.id,
           plan_name: 'Enterprise SaaS Suite',
           base_price: 499.00,
           ai_audit_price: 199.00,
@@ -108,9 +111,10 @@ const requireActiveSubscription = async (req, res, next) => {
           await db('subscriptions').insert(autoSub);
         } catch (_) {}
 
-        if (!mockStore.data) mockStore.data = {};
-        if (!mockStore.data.subscriptions) mockStore.data.subscriptions = [];
-        mockStore.data.subscriptions.push(autoSub);
+        if (!mockStore.subscriptions) mockStore.subscriptions = [];
+        mockStore.subscriptions.push(autoSub);
+        if (mockStore.data && !mockStore.data.subscriptions) mockStore.data.subscriptions = [];
+        if (mockStore.data?.subscriptions) mockStore.data.subscriptions.push(autoSub);
 
         req.subscription = autoSub;
         return next();
@@ -185,23 +189,16 @@ const requireAiAuditEnabled = async (req, res, next) => {
       user.organizationId ||
       user.organization_id ||
       req.tenantContext?.organizationId ||
-      req.headers['x-organization-id'];
-
-    if (!organizationId) {
-      return next(
-        new AiAuditNotEnabledError(
-          'AI Speech & Audit Intelligence is not enabled. Missing organization context.',
-          { enableAiAudit: false }
-        )
-      );
-    }
+      req.headers['x-organization-id'] ||
+      mockStore.organizations?.[0]?.id;
 
     const org = await withDbFallback(
       async () => {
         return db('organizations').where('id', organizationId).first();
       },
       () => {
-        return mockStore.findOne('organizations', { id: organizationId });
+        const orgs = mockStore.organizations || mockStore.data?.organizations || [];
+        return orgs.find((o) => o.id === organizationId || o.code === organizationId || o.slug === organizationId) || orgs[0];
       }
     );
 

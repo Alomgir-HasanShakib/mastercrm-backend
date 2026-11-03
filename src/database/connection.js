@@ -194,6 +194,11 @@ async function ensureDatabaseSchema() {
       }
     }
 
+    // Ensure questionnaire_module_enum includes AI_AUDIT
+    try {
+      await db.raw("ALTER TYPE questionnaire_module_enum ADD VALUE IF NOT EXISTS 'AI_AUDIT';");
+    } catch (_) {}
+
     return true;
   } catch (err) {
     console.warn('[Database] Auto-migration check notice:', err.message);

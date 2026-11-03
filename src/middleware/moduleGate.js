@@ -41,7 +41,7 @@ const normalizeModuleName = (mod) => {
 };
 
 const normalizeModulesList = (modules) => {
-  if (!modules) return ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'];
+  if (!modules) return ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT', 'AI_AUDIT'];
   let list = modules;
   if (typeof modules === 'string') {
     try {
@@ -50,7 +50,7 @@ const normalizeModulesList = (modules) => {
       list = modules.split(',').map((s) => s.trim());
     }
   }
-  if (!Array.isArray(list)) return ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'];
+  if (!Array.isArray(list)) return ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT', 'AI_AUDIT'];
   return list.map((m) => normalizeModuleName(m));
 };
 
@@ -62,8 +62,6 @@ const normalizeModulesList = (modules) => {
  * @returns {import('express').RequestHandler}
  */
 const requireModuleEnabled = (moduleKey) => {
-  const targetModule = normalizeModuleName(moduleKey);
-
   return async (req, res, next) => {
     try {
       const user = req.user || {};
@@ -78,6 +76,14 @@ const requireModuleEnabled = (moduleKey) => {
       if (isMasterAdmin) {
         return next();
       }
+
+      // Check if this request is specifically targeting AI Audit endpoints
+      const isAiAuditEndpoint =
+        req.originalUrl?.includes('ai-audit') ||
+        req.path?.includes('ai-audit') ||
+        req.baseUrl?.includes('ai-audit');
+
+      const targetModule = isAiAuditEndpoint ? 'AI_AUDIT' : normalizeModuleName(moduleKey);
 
       // 2. Resolve organization ID
       const organizationId =
@@ -124,7 +130,9 @@ const requireModuleEnabled = (moduleKey) => {
         enabledModules.includes('AI_AUDIT_QC') ||
         org.enable_ai_audit === true ||
         org.enableAiAudit === true ||
-        org.settings?.enable_ai_audit === true
+        org.settings?.enable_ai_audit === true ||
+        Number(org.audit_ai_licenses || org.ai_audit_licenses || 0) > 0 ||
+        Number(user.audit_ai_licenses || 0) > 0
       );
 
       const isEntitled = isTargetAiAudit

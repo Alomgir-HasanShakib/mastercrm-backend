@@ -21,16 +21,16 @@ const reallocateVendorLeadsSchema = Joi.object({
 
 const bindQuestionnaireSchema = Joi.object({
   questionnaireId: Joi.string().required(),
-  module: Joi.string().valid('CATI', 'CAPI', 'SUPER_AUDIT', 'TVC', 'FA', 'EXAM').default('CATI'),
+  module: Joi.string().valid('CAPI', 'CATI', 'SUPER_AUDIT', 'AI_AUDIT', 'AUDIT', 'TVC', 'FA').default('CAPI'),
   isPrimary: Joi.boolean().default(true),
-});
+}).unknown(true);
 
 const createCampaignQuestionnaireSchema = Joi.object({
-  name: Joi.string().trim().min(3).max(255).required(),
-  module: Joi.string().valid('CATI', 'CAPI', 'SUPER_AUDIT', 'TVC', 'FA', 'EXAM').default('CATI'),
+  name: Joi.string().trim().min(1).max(255).required(),
+  module: Joi.string().valid('CAPI', 'CATI', 'SUPER_AUDIT', 'AI_AUDIT', 'AUDIT', 'TVC', 'FA').default('CAPI'),
   status: Joi.string().valid('DRAFT', 'PUBLISHED').default('DRAFT'),
   description: Joi.string().allow('', null).optional(),
-});
+}).unknown(true);
 
 const surveyLeadSchema = Joi.object({
   responses: Joi.object().required(),
