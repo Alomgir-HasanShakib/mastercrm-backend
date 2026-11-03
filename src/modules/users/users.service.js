@@ -566,12 +566,10 @@ const getOrganizationQuotaStats = async (organizationId, tenantContext = {}) => 
 
       let countQuery = db('users').whereNull('deleted_at');
       if (targetOrgId) {
-        countQuery = countQuery.where((b) => {
-          b.where('organization_id', targetOrgId).orWhereNull('organization_id');
-        });
+        countQuery = countQuery.where('organization_id', targetOrgId);
       }
       const countRes = await countQuery.count('* as cnt').first();
-      const totalUsers = Math.max(parseInt(countRes?.cnt || 0, 10), 1);
+      const totalUsers = parseInt(countRes?.cnt || 0, 10);
 
       const leasesCount = targetOrgId
         ? await db('active_seat_leases')

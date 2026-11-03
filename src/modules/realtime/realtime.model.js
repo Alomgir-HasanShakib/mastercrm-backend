@@ -385,25 +385,22 @@ const realtimeModel = {
         const connectedAt = new Date(now - (14400000 + i * 600000)).toISOString();
 
         const metadata = {
-          latitude: status !== 'OFFLINE' ? profile.latitude : null,
-          longitude: status !== 'OFFLINE' ? profile.longitude : null,
-          accuracy: profile.accuracy,
-          address: profile.address,
-          locationName: profile.address,
-          city: profile.city,
-          state: profile.state,
-          batteryLevel: profile.battery,
-          battery: profile.battery,
-          deviceId: profile.deviceId,
-          deviceType: profile.deviceType,
-          os: profile.os,
-          currentAction,
-          idleDuration: idleSec,
+          latitude: null,
+          longitude: null,
+          accuracy: null,
+          address: null,
+          locationName: null,
+          city: null,
+          state: null,
+          batteryLevel: 95,
+          battery: 95,
+          deviceId: 'Web / Mobile Client',
+          deviceType: 'Mobile',
+          os: 'Web',
+          currentAction: 'Active • Standby (GPS Pending)',
+          idleDuration: 0,
           lastPingAt,
-          gps:
-            status !== 'OFFLINE'
-              ? { lat: profile.latitude, lng: profile.longitude, accuracy: profile.accuracy }
-              : null,
+          gps: null,
         };
 
         const sessionRecord = {
@@ -1199,100 +1196,93 @@ const wrappedRealtimeModel = {
     return withDbFallback(
       () => realtimeModel.getDetailedPresenceRoster(filters, pagination),
       () => {
-        let sessions = mockStore.find('realtime_sessions') || [];
-        if (!sessions || sessions.length < 5) {
-          const mUsers = (mockStore.find('users') || []).filter((u) => u.status === 'ACTIVE');
-          const mProjects = mockStore.find('projects') || [];
-          const mVendors = mockStore.find('vendors') || [];
-          const mRoles = mockStore.find('roles') || [];
-          const now = Date.now();
+        let sessions = mockStore.data['realtime_sessions'] || [];
+        const mUsers = (mockStore.find('users') || []).filter((u) => u.status === 'ACTIVE' && !u.deleted_at);
+        const mProjects = mockStore.find('projects') || [];
+        const mVendors = mockStore.find('vendors') || [];
+        const mRoles = mockStore.find('roles') || [];
+        const now = Date.now();
 
-          mockStore.data['realtime_sessions'] = mUsers.map((u, i) => {
-            const profile = SAMPLE_TELEMETRY_PROFILES[i % SAMPLE_TELEMETRY_PROFILES.length];
-            const p = mProjects.length > 0 ? mProjects[i % mProjects.length] : null;
-            const v = u.vendor_id ? mockStore.findById('vendors', u.vendor_id) || mVendors[i % mVendors.length] : mVendors[i % mVendors.length];
-            const r = u.role_id ? mockStore.findById('roles', u.role_id) : null;
+        // Ensure every active workforce user has an entry in realtime_sessions without fake GPS coordinates
+        for (const u of mUsers) {
+          const existingIndex = sessions.findIndex((s) => String(s.user_id) === String(u.id));
+          const r = u.role_id ? mockStore.findById('roles', u.role_id) : null;
+          const roleName = r ? r.name : (u.role || 'Field Agent');
+          let channel = 'CAPI';
+          if (roleName.toUpperCase().includes('CATI')) channel = 'CATI';
+          else if (roleName.toUpperCase().includes('TVC')) channel = 'TVC';
+          else if (roleName.toUpperCase().includes('FA')) channel = 'FA';
 
-            const mod = i % 10;
-            let status = 'ACTIVE';
-            let idleSec = 0;
-            let lastPingOffset = (15 + ((i * 8) % 45)) * 1000;
+          const p = mProjects.find((pr) => pr.organization_id === u.organization_id) || mProjects[0] || null;
+          const v = u.vendor_id ? mockStore.findById('vendors', u.vendor_id) : (mVendors[0] || null);
 
-            if (mod === 4 || mod === 7) {
-              status = 'IDLE';
-              idleSec = 240 + ((i * 30) % 300);
-              lastPingOffset = (240 + ((i * 20) % 200)) * 1000;
-            } else if (mod === 9) {
-              status = 'OFFLINE';
-              idleSec = 3600;
-              lastPingOffset = (7200 + i * 3600) * 1000;
-            }
-
-            const roleName = r ? r.name : (u.role || 'Field Agent');
-            let channel = 'CAPI';
-            if (roleName.toUpperCase().includes('CATI')) channel = 'CATI';
-            else if (roleName.toUpperCase().includes('TVC')) channel = 'TVC';
-            else if (roleName.toUpperCase().includes('FA')) channel = 'FA';
-
-            const currentAction =
-              status === 'ACTIVE'
-                ? profile.actionActive
-                : status === 'IDLE'
-                ? profile.actionIdle
-                : profile.actionOffline;
-
-            return {
+          if (existingIndex < 0) {
+            sessions.push({
               id: `sess-${u.id}`,
               sessionId: `sess-${u.id}`,
               user_id: u.id,
+              organization_id: u.organization_id || null,
               vendor_id: v?.id || null,
               project_id: p?.id || null,
               channel,
               role: roleName,
-              status,
-              state: status,
-              currentAction,
-              current_action: currentAction,
-              latitude: status !== 'OFFLINE' ? profile.latitude : null,
-              longitude: status !== 'OFFLINE' ? profile.longitude : null,
-              accuracy: profile.accuracy,
-              address: profile.address,
-              locationName: profile.address,
-              batteryLevel: profile.battery,
-              battery_level: profile.battery,
-              deviceId: profile.deviceId,
-              device_id: profile.deviceId,
-              deviceType: profile.deviceType,
-              os: profile.os,
-              idleDuration: idleSec,
-              idle_duration: idleSec,
-              lastPingAt: new Date(now - lastPingOffset).toISOString(),
-              last_ping_at: new Date(now - lastPingOffset).toISOString(),
-              connected_at: new Date(now - (14400000 + i * 600000)).toISOString(),
-              connectedAt: new Date(now - (14400000 + i * 600000)).toISOString(),
-            };
-          });
-          sessions = mockStore.data['realtime_sessions'];
+              status: 'ACTIVE',
+              state: 'ACTIVE',
+              currentAction: 'Active • Standby (GPS Pending)',
+              current_action: 'Active • Standby (GPS Pending)',
+              latitude: null,
+              longitude: null,
+              accuracy: null,
+              address: null,
+              locationName: null,
+              batteryLevel: 95,
+              battery_level: 95,
+              deviceId: 'Web / Mobile Client',
+              device_id: 'Web / Mobile Client',
+              deviceType: 'Mobile',
+              os: 'Web',
+              idleDuration: 0,
+              idle_duration: 0,
+              lastPingAt: new Date().toISOString(),
+              last_ping_at: new Date().toISOString(),
+              connected_at: new Date().toISOString(),
+              connectedAt: new Date().toISOString(),
+            });
+          } else {
+            // Update organization and role linkages
+            sessions[existingIndex].organization_id = u.organization_id || sessions[existingIndex].organization_id;
+            sessions[existingIndex].role = roleName;
+            if (v && !sessions[existingIndex].vendor_id) sessions[existingIndex].vendor_id = v.id;
+            if (p && !sessions[existingIndex].project_id) sessions[existingIndex].project_id = p.id;
+          }
         }
+        mockStore.data['realtime_sessions'] = sessions;
 
         const enriched = sessions.map((sess) => {
           const u = mockStore.findById('users', sess.user_id) || {};
-          const v = sess.vendor_id ? mockStore.findById('vendors', sess.vendor_id) : null;
+          const v = sess.vendor_id ? mockStore.findById('vendors', sess.vendor_id) : (u.vendor_id ? mockStore.findById('vendors', u.vendor_id) : null);
           const p = sess.project_id ? mockStore.findById('projects', sess.project_id) : null;
 
           const st = sess.status || sess.state || 'ACTIVE';
           const normalizedStatus =
             st === 'OFFLINE' || sess.disconnected_at ? 'OFFLINE' : st === 'IDLE' ? 'IDLE' : 'ACTIVE';
 
+          const hasRealGps =
+            sess.latitude !== null &&
+            sess.latitude !== undefined &&
+            sess.longitude !== null &&
+            sess.longitude !== undefined;
+
           return {
             id: sess.id,
             sessionId: sess.id,
             userId: sess.user_id,
+            organizationId: sess.organization_id || u.organization_id || null,
             name: `${u.first_name || ''} ${u.last_name || ''}`.trim() || u.email || 'Agent',
             email: u.email || 'agent@mastercrm.com',
             phone: u.phone || '+91-9800000000',
-            role: sess.role || 'Field Agent',
-            vendorId: sess.vendor_id || null,
+            role: sess.role || (u.role_id ? mockStore.findById('roles', u.role_id)?.name : 'Field Agent'),
+            vendorId: sess.vendor_id || u.vendor_id || null,
             vendorName: v ? v.name : 'Direct / In-House Agency',
             projectId: sess.project_id || null,
             projectName: p ? p.name : 'General Field Campaign',
@@ -1302,33 +1292,33 @@ const wrappedRealtimeModel = {
             currentAction:
               sess.currentAction ||
               sess.current_action ||
-              (normalizedStatus === 'ACTIVE'
-                ? 'Field Survey Active'
-                : normalizedStatus === 'IDLE'
-                ? 'Idle / Transit between Polling Booths'
-                : 'Standby / Shift Complete'),
-            latitude: sess.latitude !== undefined ? sess.latitude : null,
-            longitude: sess.longitude !== undefined ? sess.longitude : null,
-            accuracy: sess.accuracy || 4.2,
-            address: sess.address || sess.locationName || 'Field Operations Sector',
-            locationName: sess.address || sess.locationName || 'Field Operations Sector',
-            batteryLevel: sess.batteryLevel ?? sess.battery_level ?? 85,
-            deviceId: sess.deviceId || sess.device_id || 'Android 14 • Tab S9',
-            deviceType: sess.deviceType || 'Tablet',
-            os: sess.os || 'Android 14',
+              (hasRealGps
+                ? 'Live Field Tracking Active'
+                : normalizedStatus === 'ACTIVE'
+                ? 'Active • Standby (GPS Pending)'
+                : 'Offline / Shift Complete'),
+            latitude: hasRealGps ? Number(sess.latitude) : null,
+            longitude: hasRealGps ? Number(sess.longitude) : null,
+            accuracy: hasRealGps ? (Number(sess.accuracy) || 10) : null,
+            address: sess.address || (hasRealGps ? `GPS: ${Number(sess.latitude).toFixed(4)}, ${Number(sess.longitude).toFixed(4)}` : null),
+            locationName: sess.locationName || sess.address || null,
+            batteryLevel: sess.batteryLevel ?? sess.battery_level ?? 90,
+            deviceId: sess.deviceId || sess.device_id || 'Mobile Client',
+            deviceType: sess.deviceType || 'Mobile',
+            os: sess.os || 'Web',
             idleDuration: sess.idleDuration ?? sess.idle_duration ?? (normalizedStatus === 'IDLE' ? 240 : 0),
             lastPingAt: sess.lastPingAt || sess.last_ping_at || sess.last_heartbeat_at || new Date().toISOString(),
             connectedAt: sess.connected_at || new Date().toISOString(),
+            isLiveGps: hasRealGps,
           };
         });
 
-        const workforceTotal = enriched.length;
-        const workforceActive = enriched.filter((u) => u.status === 'ACTIVE').length;
-        const workforceIdle = enriched.filter((u) => u.status === 'IDLE').length;
-        const workforceOffline = enriched.filter((u) => u.status === 'OFFLINE').length;
-
         let filtered = enriched;
 
+        // Tenant Organization Scoping
+        if (filters.organizationId && filters.organizationId !== 'ALL') {
+          filtered = filtered.filter((e) => String(e.organizationId) === String(filters.organizationId));
+        }
         if (filters.status && filters.status !== 'ALL') {
           const targetStatus = filters.status.toUpperCase();
           filtered = filtered.filter((e) => e.status.toUpperCase() === targetStatus || e.state.toUpperCase() === targetStatus);
@@ -1361,6 +1351,11 @@ const wrappedRealtimeModel = {
               (e.projectName && e.projectName.toLowerCase().includes(q))
           );
         }
+
+        const workforceTotal = filtered.length;
+        const workforceActive = filtered.filter((u) => u.status === 'ACTIVE').length;
+        const workforceIdle = filtered.filter((u) => u.status === 'IDLE').length;
+        const workforceOffline = filtered.filter((u) => u.status === 'OFFLINE').length;
 
         return {
           activeUsers: filtered,

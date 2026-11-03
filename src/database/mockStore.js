@@ -246,7 +246,7 @@ const store = {
   users: [
     {
       id: '88385a13-2e1f-4f44-b761-6a0dcf6a7c5c',
-      organization_id: ORG_ID,
+      organization_id: null,
       email: 'admin@mastercrm.com',
       password_hash: HASH_ADMIN,
       first_name: 'Master',
@@ -261,7 +261,7 @@ const store = {
     },
     {
       id: USER_ADMIN_ID,
-      organization_id: ORG_ID,
+      organization_id: null,
       email: 'admin@crm.local',
       password_hash: HASH_ADMIN,
       first_name: 'Raj',
@@ -3308,19 +3308,19 @@ const mockStore = {
     this.cleanExpiredLeases();
     let org = null;
     if (organizationId) {
-      org = store.organizations.find((o) => o.id === organizationId || o.code === organizationId);
+      org = store.organizations.find((o) => o.id === organizationId || o.code === organizationId || o.name === organizationId);
     }
     if (!org && store.organizations.length > 0) {
       org = store.organizations[0];
     }
-    const targetOrgId = org ? org.id : (organizationId || ORG_ID);
+    const targetOrgId = org ? org.id : organizationId;
 
     const activeUsers = store.users.filter((u) => !u.deleted_at);
-    // Find all users belonging to this organization or in default pool
-    let orgUsers = activeUsers.filter(
-      (u) => !targetOrgId || u.organization_id === targetOrgId || !u.organization_id || targetOrgId === ORG_ID
-    );
-    const totalUsers = Math.max(orgUsers.length, 1);
+    // Find all users belonging strictly to this organization
+    const orgUsers = targetOrgId
+      ? activeUsers.filter((u) => u.organization_id === targetOrgId)
+      : activeUsers;
+    const totalUsers = orgUsers.length;
 
     const leases = store.active_seat_leases.filter(
       (l) => (!targetOrgId || l.organization_id === targetOrgId) && new Date(l.expires_at) > new Date()
