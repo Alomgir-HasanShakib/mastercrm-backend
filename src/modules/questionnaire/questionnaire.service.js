@@ -412,15 +412,27 @@ const questionnaireService = {
         }
         await trx('questionnaire_versions').where('id', id).update(updatePayload);
 
-        // If full sections tree is provided, sync sections, questions, and options
-        if (Array.isArray(data.sections) && data.sections.length > 0) {
+        // If full sections tree or flat questions list is provided, sync sections, questions, and options
+        let sectionsToSync = Array.isArray(data.sections) && data.sections.length > 0 ? data.sections : null;
+        if (!sectionsToSync && Array.isArray(data.questions) && data.questions.length > 0) {
+          sectionsToSync = [
+            {
+              code: 'SEC_MAIN',
+              title: 'Main Protocol',
+              display_order: 1,
+              questions: data.questions,
+            },
+          ];
+        }
+
+        if (Array.isArray(sectionsToSync) && sectionsToSync.length > 0) {
           await trx('questions').where('questionnaire_version_id', id).delete();
           await trx('sections').where('questionnaire_version_id', id).delete();
 
           const usedQTags = new Set();
 
-          for (let sIdx = 0; sIdx < data.sections.length; sIdx++) {
-            const sec = data.sections[sIdx];
+          for (let sIdx = 0; sIdx < sectionsToSync.length; sIdx++) {
+            const sec = sectionsToSync[sIdx];
             const secCode = (sec.code || `SEC_${sIdx + 1}`).trim();
             const secTitle = sec.title || `Section ${sIdx + 1}`;
 
@@ -571,13 +583,25 @@ const questionnaireService = {
         qv.updated_at = new Date();
       }
 
-      if (Array.isArray(data.sections) && data.sections.length > 0) {
+      let mockSectionsToSync = Array.isArray(data.sections) && data.sections.length > 0 ? data.sections : null;
+      if (!mockSectionsToSync && Array.isArray(data.questions) && data.questions.length > 0) {
+        mockSectionsToSync = [
+          {
+            code: 'SEC_MAIN',
+            title: 'Main Protocol',
+            display_order: 1,
+            questions: data.questions,
+          },
+        ];
+      }
+
+      if (Array.isArray(mockSectionsToSync) && mockSectionsToSync.length > 0) {
         mockStore.data.sections = (mockStore.data.sections || []).filter((s) => s.questionnaire_version_id !== id);
         mockStore.data.questions = (mockStore.data.questions || []).filter((q) => q.questionnaire_version_id !== id);
         mockStore.data.question_options = (mockStore.data.question_options || []).filter((opt) => opt && opt.question_id && !opt.question_id.startsWith(`q-${id}`));
 
-        for (let sIdx = 0; sIdx < data.sections.length; sIdx++) {
-          const sec = data.sections[sIdx];
+        for (let sIdx = 0; sIdx < mockSectionsToSync.length; sIdx++) {
+          const sec = mockSectionsToSync[sIdx];
           const secId = sec.id || `sec-${id}-${sIdx + 1}`;
           mockStore.data.sections.push({
             id: secId,
