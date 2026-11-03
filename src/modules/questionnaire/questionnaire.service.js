@@ -542,9 +542,9 @@ const questionnaireService = {
                 questionnaire_version_id: id,
                 section_id: createdSec.id,
                 question_no: q.questionNo || q.question_no || q.sn || `${sIdx + 1}.${qIdx + 1}`,
-                question_tag: qCode,
+                question_tag: q.tag || q.question_tag || qCode,
                 question_type: qType,
-                question_text: q.text || q.question_text || q.q?.label || q.label || 'Untitled Question',
+                question_text: q.questionText || q.question_text || q.text || q.q?.label || q.label || 'Untitled Question',
                 help_text: q.helpText || q.help_text || q.q?.help || null,
                 is_required: q.required !== false && q.is_required !== false,
                 display_order: q.displayOrder || qIdx + 1,
@@ -615,23 +615,32 @@ const questionnaireService = {
           for (let qIdx = 0; qIdx < questions.length; qIdx++) {
             const q = questions[qIdx];
             const qId = q.id || `q-${id}-${sIdx + 1}-${qIdx + 1}`;
+            const rawOpts = Array.isArray(q.answerValidationOptions) && q.answerValidationOptions.length > 0
+              ? q.answerValidationOptions
+              : (Array.isArray(q.options) && q.options.length > 0
+              ? q.options
+              : (Array.isArray(q.a?.options) ? q.a.options : []));
+
+            const resolvedQTag = q.tag || q.code || q.question_tag || `Q_${sIdx + 1}_${qIdx + 1}`;
+            const resolvedQText = q.questionText || q.question_text || q.text || q.q?.label || q.label || `Question ${qIdx + 1}`;
+            const resolvedQType = q.type || q.question_type || (rawOpts.length > 0 ? 'SINGLE_SELECT' : 'TEXT');
+
             mockStore.data.questions.push({
               id: qId,
               questionnaire_version_id: id,
               section_id: secId,
-              question_tag: q.code || q.question_tag || `Q_${sIdx + 1}_${qIdx + 1}`,
-              question_no: q.questionNo || q.question_no || String(qIdx + 1),
-              question_type: q.type || q.question_type || 'TEXT',
-              question_text: q.text || q.question_text || '',
+              question_tag: resolvedQTag,
+              question_no: q.questionNo || q.question_no || q.sn || String(qIdx + 1),
+              question_type: resolvedQType,
+              question_text: resolvedQText,
               is_required: Boolean(q.required ?? q.is_required),
               help_text: q.helpText || q.help_text || '',
-              display_order: qIdx + 1,
-              metadata: JSON.stringify(q.metadata || {}),
+              display_order: q.displayOrder || qIdx + 1,
+              metadata: JSON.stringify(q.metadata || { tag: resolvedQTag, toBeAudited: q.toBeAudited || 'Yes' }),
             });
 
-            const options = Array.isArray(q.options) ? q.options : [];
-            for (let oIdx = 0; oIdx < options.length; oIdx++) {
-              const opt = options[oIdx];
+            for (let oIdx = 0; oIdx < rawOpts.length; oIdx++) {
+              const opt = rawOpts[oIdx];
               mockStore.data.question_options.push({
                 id: `opt-${qId}-${oIdx + 1}`,
                 question_id: qId,
