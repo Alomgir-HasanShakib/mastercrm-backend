@@ -17,12 +17,34 @@ const {
   assignmentSchema,
   idParamSchema,
   assignmentParamSchema,
+  resetPasswordSchema,
 } = require('./users.validation');
 
 const router = express.Router();
 
 // Apply authentication and tenant context resolution to all user routes
 router.use(authenticate, setTenantContext);
+
+/**
+ * @route GET /api/v1/users/stats/quota
+ * @desc Get organization user quota and concurrent seat lease statistics
+ * @access Private
+ */
+router.get(
+  '/stats/quota',
+  usersController.getQuotaStats
+);
+
+/**
+ * @route POST /api/v1/users/bulk-import
+ * @desc Bulk import user accounts from parsed CSV data
+ * @access Private (users:manage)
+ */
+router.post(
+  '/bulk-import',
+  checkPermission('users', 'manage'),
+  usersController.bulkImport
+);
 
 /**
  * @route GET /api/v1/users
@@ -99,24 +121,16 @@ router.delete(
 );
 
 /**
- * @route GET /api/v1/users/stats/quota
- * @desc Get organization user quota and concurrent seat lease statistics
- * @access Private
- */
-router.get(
-  '/stats/quota',
-  usersController.getQuotaStats
-);
-
-/**
- * @route POST /api/v1/users/bulk-import
- * @desc Bulk import user accounts from parsed CSV data
+ * @route POST /api/v1/users/:id/password
+ * @desc Reset or change a user's password (Admin / Vendor action)
  * @access Private (users:manage)
  */
 router.post(
-  '/bulk-import',
+  '/:id/password',
   checkPermission('users', 'manage'),
-  usersController.bulkImport
+  validate(idParamSchema, 'params'),
+  validate(resetPasswordSchema, 'body'),
+  usersController.resetPassword
 );
 
 /**

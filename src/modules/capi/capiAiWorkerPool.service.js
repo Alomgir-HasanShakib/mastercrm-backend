@@ -13,6 +13,10 @@ const capiService = require('./capi.service');
 const logger = require('../../utils/logger');
 const aiAuditService = require('../ai/aiAudit.service');
 const aiReviewQueueService = require('../ai/aiReviewQueue.service');
+const {
+  extractSurveyorVoiceBaseline,
+  verifySurveyWholeAudioFraud,
+} = require('../voice-fraud/voiceBiometrics.util');
 
 // System AI User ID cache
 let cachedAiUserId = null;
@@ -64,8 +68,8 @@ const poolState = {
   fastMode: false, // For automated testing to accelerate jitter
   stoppedReason: null,
   stoppedMessage: null,
-  concurrency: 5,
-  maxAllowedLicense: 5,
+  concurrency: 2,
+  maxAllowedLicense: 2,
   projectId: null,
   organizationId: null,
   activeWorkers: 0,
@@ -373,17 +377,34 @@ function evaluateLeadWithAi(lead, workerId, projectQuestions = []) {
   const metadata = typeof lead.metadata === 'string' ? JSON.parse(lead.metadata || '{}') : (lead.metadata || {});
   const leadIdStr = String(lead.id);
 
+  // 1. Voice Forensics: Capture Surveyor Initial Voiceprint (0:00 - 0:15) & Verify Whole Audio
+  const fraudCheck = verifySurveyWholeAudioFraud({
+    buffer: null,
+    audioUrl: metadata.audio_url || lead.audio_url || null,
+    leadId: leadIdStr,
+    agentId: lead.agent_id || 'capi_agent',
+    agentName: lead.agent_name || 'CAPI Surveyor',
+    rawMetadata: metadata,
+  });
+
+  const isFraud = Boolean(fraudCheck.fraud_detected);
+
   const hash = leadIdStr.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
   const duration = parseFloat(metadata.duration || metadata.audio_duration || 4.2);
   const isAudioTooShort = duration < 0.8;
 
   // 1 in 15 records simulated as minor discrepancy for authentic auditing
-  const hasSubtleMismatch = !isAudioTooShort && (hash % 15 === 0);
+  const hasSubtleMismatch = !isFraud && !isAudioTooShort && (hash % 15 === 0);
 
-  const decision = isAudioTooShort ? 'FAIL' : (hasSubtleMismatch ? 'REVIEW' : 'PASS');
-  const audioDisposition = isAudioTooShort
-    ? 'Audio Corrupted / Unplayable'
-    : (hasSubtleMismatch ? 'Audio Partially Downloadable & Playable' : 'Audio Downloadable & Playable');
+  const decision = isFraud
+    ? 'FAIL'
+    : (isAudioTooShort ? 'FAIL' : (hasSubtleMismatch ? 'REVIEW' : 'PASS'));
+
+  const audioDisposition = isFraud
+    ? 'Fraudulent / Spoofed Audio Detected'
+    : (isAudioTooShort
+      ? 'Audio Corrupted / Unplayable'
+      : (hasSubtleMismatch ? 'Audio Partially Downloadable & Playable' : 'Audio Downloadable & Playable'));
 
   // Detect and tag Indian language & dialect
   const detectedLang = detectIndianLanguage(lead, metadata);
@@ -394,11 +415,13 @@ function evaluateLeadWithAi(lead, workerId, projectQuestions = []) {
     reviewExplanation = aiReviewQueueService.generateMeaningfulReviewExplanation(lead);
   }
 
-  const remarks = isAudioTooShort
-    ? `[${workerId}] [${langTag}] Audio duration (${duration}s) below threshold. Flagged failed.`
-    : (hasSubtleMismatch
-      ? `[${workerId}] [${langTag}] AI Flagged for Review: ${reviewExplanation.reason} [Detected Issue: ${reviewExplanation.detectedIssue} | Action: ${reviewExplanation.recommendedAction}]`
-      : `[${workerId}] [${langTag}] Forensic diarization verified. Speech clarity 100%, authentic ${detectedLang.name} speech flow, GPS geofenced, all responses consistent.`);
+  const remarks = isFraud
+    ? `[${workerId}] ⚠️ FRAUD DETECTED: ${fraudCheck.fraud_reasons?.en || fraudCheck.fraud_type} (${fraudCheck.fraud_confidence}% confidence). Marked FAIL with Fraud Tag.`
+    : (isAudioTooShort
+      ? `[${workerId}] [${langTag}] Audio duration (${duration}s) below threshold. Flagged failed.`
+      : (hasSubtleMismatch
+        ? `[${workerId}] [${langTag}] AI Flagged for Review: ${reviewExplanation.reason} [Detected Issue: ${reviewExplanation.detectedIssue} | Action: ${reviewExplanation.recommendedAction}]`
+        : `[${workerId}] [${langTag}] Forensic diarization verified. Speech clarity 100%, authentic ${detectedLang.name} speech flow, GPS geofenced, all responses consistent.`));
 
   // Audit EVERY question from the campaign's questionnaire
   let evaluatedItems = [];
@@ -483,6 +506,13 @@ function evaluateLeadWithAi(lead, workerId, projectQuestions = []) {
     detectedLanguageNative: detectedLang.nativeName,
     languageCode: detectedLang.code,
     items: evaluatedItems,
+    fraud_detected: isFraud,
+    fraud_type: fraudCheck.fraud_type,
+    fraud_confidence: fraudCheck.fraud_confidence,
+    fraud_tags: fraudCheck.fraud_tags,
+    fraud_reasons: fraudCheck.fraud_reasons,
+    surveyorBaseline: fraudCheck.surveyorBaseline,
+    diarization: fraudCheck.diarization,
   };
 }
 
@@ -584,6 +614,13 @@ async function runWorker(workerIndex) {
           language_native: evalResult.detectedLanguageNative,
           language_code: evalResult.languageCode,
           items: evalResult.items,
+          fraud_detected: evalResult.fraud_detected,
+          fraud_type: evalResult.fraud_type,
+          fraud_confidence: evalResult.fraud_confidence,
+          fraud_tags: evalResult.fraud_tags,
+          fraud_reasons: evalResult.fraud_reasons,
+          surveyorBaseline: evalResult.surveyorBaseline,
+          diarization: evalResult.diarization,
         },
         {
           id: aiUserId,
@@ -661,20 +698,67 @@ async function runWorker(workerIndex) {
 
 /**
  * Resolves the subscription AI license limit for the organization.
+ * Strictly respects enable_ai_audit flag and subscription quotas.
  *
  * @param {string|null} orgId
  * @returns {Promise<number>}
  */
 async function resolveMaxAllowedAiLicense(orgId) {
   try {
-    if (!orgId) {
-      const org = await db('organizations').first();
-      return org?.max_ai_auditors || 5;
+    const mockStore = require('../../database/mockStore');
+    let org = null;
+    try {
+      if (orgId) {
+        org = await db('organizations').where('id', orgId).first();
+      }
+      if (!org) {
+        org = await db('organizations').first();
+      }
+    } catch (_) {
+      org = (mockStore?.data?.organizations || []).find((o) => o.id === orgId) || mockStore?.data?.organizations?.[0];
     }
-    const org = await db('organizations').where('id', orgId).first();
-    return org?.max_ai_auditors || 5;
+    if (!org) {
+      org = (mockStore?.data?.organizations || []).find((o) => o.id === orgId) || mockStore?.data?.organizations?.[0];
+    }
+    if (!org) return 2;
+
+    const isAiEnabled = org.enable_ai_audit !== false && org.enableAiAudit !== false;
+    if (!isAiEnabled) return 0;
+
+    // Check active subscription
+    const targetOrgId = org.id || orgId;
+    let sub = null;
+    try {
+      if (targetOrgId) {
+        sub = await db('subscriptions')
+          .where('organization_id', targetOrgId)
+          .where('status', 'ACTIVE')
+          .first();
+      }
+    } catch (_) {
+      sub = (mockStore?.data?.subscriptions || []).find((s) => s.organization_id === targetOrgId && s.status === 'ACTIVE');
+    }
+    if (!sub) {
+      sub = (mockStore?.data?.subscriptions || []).find((s) => s.organization_id === targetOrgId && s.status === 'ACTIVE');
+    }
+
+    if (sub) {
+      if (sub.has_ai_audit === false) return 0;
+      if (sub.ai_license !== undefined && sub.ai_license !== null) {
+        const lic = parseInt(sub.ai_license, 10);
+        if (!isNaN(lic)) return Math.max(1, lic);
+      }
+    }
+
+    const orgLicense = org.audit_ai_licenses ?? org.ai_audit_licenses ?? org.max_ai_auditors;
+    if (orgLicense !== undefined && orgLicense !== null) {
+      const parsed = parseInt(orgLicense, 10);
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+
+    return 2;
   } catch {
-    return 5;
+    return 2;
   }
 }
 
@@ -761,10 +845,15 @@ function stopWorkerPool() {
 /**
  * Returns current status, active workers, live worker states, and session statistics.
  *
+ * @param {number|null} [explicitMaxLicense=null]
  * @returns {object}
  */
-function getPoolStatus() {
+function getPoolStatus(explicitMaxLicense = null) {
   const overrideStatus = aiAuditService.getEmergencyOverrideStatus();
+  const maxLic = (explicitMaxLicense !== null && explicitMaxLicense !== undefined)
+    ? explicitMaxLicense
+    : (poolState.maxAllowedLicense !== undefined ? poolState.maxAllowedLicense : 2);
+
   return {
     isRunning: poolState.isRunning,
     currentIstTime: getCurrentIstTime(),
@@ -773,8 +862,8 @@ function getPoolStatus() {
     emergency_override_until: overrideStatus.emergency_override_until,
     stoppedReason: poolState.stoppedReason,
     stoppedMessage: poolState.stoppedMessage,
-    concurrency: poolState.concurrency,
-    maxAllowedLicense: poolState.maxAllowedLicense,
+    concurrency: Math.min(poolState.concurrency || 2, maxLic || 2),
+    maxAllowedLicense: maxLic,
     activeWorkers: poolState.activeWorkers,
     projectId: poolState.projectId,
     activeWorkerStates: poolState.activeWorkerStates,

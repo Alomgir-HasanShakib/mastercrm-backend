@@ -27,6 +27,7 @@ router.delete('/profiles/:agentId', voiceFraudController.deleteProfile);
 
 // Automated / On-demand Lead Verification
 router.post('/verify', upload.single('audio'), voiceFraudController.verifyLeadVoice);
+router.post('/audit-survey', upload.single('audio'), voiceFraudController.auditSurvey);
 
 // Voice Fraud Incidents Records & Radar
 router.get('/records', voiceFraudController.getRecords);

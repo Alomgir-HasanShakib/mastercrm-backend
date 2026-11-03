@@ -228,7 +228,9 @@ const capiController = {
       if (!projectId) {
         return success(res, null, 'Please select a campaign to fetch pending audits');
       }
-      const audit = await capiService.getNextQueuedAudit(auditorId, projectId, req.tenantContext);
+      const ac = req.query?.ac || req.body?.ac || req.query?.constituency || null;
+      const contextWithAc = { ...(req.tenantContext || {}), ac };
+      const audit = await capiService.getNextQueuedAudit(auditorId, projectId, contextWithAc);
 
       if (!audit) {
         return success(res, null, 'No pending CAPI audits available in queue');
@@ -334,7 +336,9 @@ const capiController = {
    */
   async getAiAuditStatus(req, res, next) {
     try {
-      const status = aiWorkerPool.getPoolStatus();
+      const orgId = req.user?.organization_id || req.tenantContext?.organizationId || null;
+      const maxLicense = await aiWorkerPool.resolveMaxAllowedAiLicense(orgId);
+      const status = aiWorkerPool.getPoolStatus(maxLicense);
       return success(res, status, 'AI Auditor Worker Pool status retrieved');
     } catch (err) {
       return next(err);

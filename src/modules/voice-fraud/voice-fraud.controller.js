@@ -125,6 +125,46 @@ class VoiceFraudController {
   }
 
   /**
+   * End-to-end Surveyor Voice Biometric Capture & Anti-Fraud Verification
+   * POST /api/v1/voice-fraud/audit-survey
+   */
+  async auditSurvey(req, res, next) {
+    try {
+      const {
+        leadId,
+        lead_id,
+        projectId,
+        project_id,
+        agentId,
+        agent_id,
+        agentName,
+        agent_name,
+        audioUrl,
+        audio_url,
+        segments,
+        simulatedScenario,
+        metadata,
+      } = req.body;
+
+      const result = await voiceFraudService.auditSurveyVoiceForensics({
+        leadId: leadId || lead_id,
+        projectId: projectId || project_id,
+        agentId: agentId || agent_id || req.user?.id,
+        agentName: agentName || agent_name || req.user?.name || req.user?.email,
+        audioUrl: audioUrl || audio_url,
+        audioBuffer: req.file ? req.file.buffer : null,
+        segments: segments ? (typeof segments === 'string' ? JSON.parse(segments) : segments) : [],
+        simulatedScenario,
+        metadata: metadata ? (typeof metadata === 'string' ? JSON.parse(metadata) : metadata) : req.body,
+      });
+
+      return success(res, result, result.fraud_detected ? 'Survey Voice Fraud Detected' : 'Survey Voice Biometrics Verified');
+    } catch (err) {
+      return next(err);
+    }
+  }
+
+  /**
    * Get fraud records
    * GET /api/v1/voice-fraud/records
    */

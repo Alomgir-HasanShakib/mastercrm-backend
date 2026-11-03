@@ -72,10 +72,36 @@ const createOrganization = async (data, tenantContext = {}) => {
   }
 
   // 1. Create Organization in Database
-  const createdOrg = await tenancyModel.createOrganization({
+  const rawModules = data.enabled_modules || data.enabledModules;
+  let hasAiModule = false;
+  if (Array.isArray(rawModules)) {
+    hasAiModule = rawModules.some((m) => {
+      const upper = String(m).trim().toUpperCase();
+      return upper === 'AI_AUDIT' || upper === 'AI_AUDIT_QC';
+    });
+  }
+
+  const enableAiAudit = Array.isArray(rawModules)
+    ? hasAiModule
+    : (data.enable_ai_audit !== undefined
+      ? Boolean(data.enable_ai_audit)
+      : (data.enableAiAudit !== undefined ? Boolean(data.enableAiAudit) : true));
+
+  const orgPayload = {
     ...data,
     code,
-  });
+    enable_ai_audit: enableAiAudit,
+    enableAiAudit: enableAiAudit,
+  };
+  if (Array.isArray(rawModules)) {
+    const modulesCopy = [...rawModules];
+    if (enableAiAudit && !modulesCopy.some((m) => String(m).trim().toUpperCase() === 'AI_AUDIT')) {
+      modulesCopy.push('AI_AUDIT');
+    }
+    orgPayload.enabled_modules = modulesCopy;
+  }
+
+  const createdOrg = await tenancyModel.createOrganization(orgPayload);
 
   // 1.1 Automatically provision active Enterprise SaaS subscription
   try {
@@ -232,11 +258,23 @@ const updateOrganization = async (id, data, tenantContext = {}) => {
   }
 
   const updatePayload = { ...data };
-  if (updatePayload.enableAiAudit !== undefined) {
+  const rawModules = updatePayload.enabled_modules || updatePayload.enabledModules;
+  if (Array.isArray(rawModules)) {
+    const hasAiAudit = rawModules.some((m) => {
+      const upper = String(m).trim().toUpperCase();
+      return upper === 'AI_AUDIT' || upper === 'AI_AUDIT_QC';
+    });
+    updatePayload.enable_ai_audit = hasAiAudit;
+    updatePayload.enableAiAudit = hasAiAudit;
+    const modulesCopy = [...rawModules];
+    if (hasAiAudit && !modulesCopy.some((m) => String(m).trim().toUpperCase() === 'AI_AUDIT')) {
+      modulesCopy.push('AI_AUDIT');
+    }
+    updatePayload.enabled_modules = modulesCopy;
+  } else if (updatePayload.enableAiAudit !== undefined) {
     updatePayload.enable_ai_audit = Boolean(updatePayload.enableAiAudit);
     delete updatePayload.enableAiAudit;
-  }
-  if (updatePayload.enable_ai_audit !== undefined) {
+  } else if (updatePayload.enable_ai_audit !== undefined) {
     updatePayload.enable_ai_audit = Boolean(updatePayload.enable_ai_audit);
   }
 
@@ -980,12 +1018,24 @@ const updateOrganizationModules = async (id, modules, tenantContext = {}) => {
 
   await getOrganizationById(id, tenantContext);
 
-  const normalizedModules = Array.isArray(modules)
+  const rawList = Array.isArray(modules)
     ? modules
     : (modules?.enabled_modules || modules?.enabledModules || modules?.modules || []);
 
+  const hasAiAudit = rawList.some((m) => {
+    const upper = String(m).trim().toUpperCase();
+    return upper === 'AI_AUDIT' || upper === 'AI_AUDIT_QC';
+  });
+
+  const normalizedModules = [...rawList];
+  if (hasAiAudit && !normalizedModules.some((m) => String(m).trim().toUpperCase() === 'AI_AUDIT')) {
+    normalizedModules.push('AI_AUDIT');
+  }
+
   return tenancyModel.updateOrganization(id, {
     enabled_modules: normalizedModules,
+    enable_ai_audit: hasAiAudit,
+    enableAiAudit: hasAiAudit,
   });
 };
 

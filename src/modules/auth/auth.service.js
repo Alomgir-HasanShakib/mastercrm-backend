@@ -85,18 +85,50 @@ const enrichUserWithOrgDetails = async (user) => {
   }
 
   const defaultModules = ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'];
-  const enabledModules = org?.enabled_modules || defaultModules;
+  let enabledModules = org?.enabled_modules || defaultModules;
+  if (typeof enabledModules === 'string') {
+    try {
+      enabledModules = JSON.parse(enabledModules);
+    } catch {
+      enabledModules = enabledModules.split(',').map((s) => s.trim());
+    }
+  }
+  if (!Array.isArray(enabledModules)) {
+    enabledModules = defaultModules;
+  }
+
+  const isAiAuditEnabled = Boolean(
+    org?.enable_ai_audit === true ||
+    org?.enableAiAudit === true ||
+    enabledModules.includes('AI_AUDIT') ||
+    enabledModules.includes('AI_AUDIT_QC')
+  );
+
+  if (isAiAuditEnabled && !enabledModules.includes('AI_AUDIT')) {
+    enabledModules = [...enabledModules, 'AI_AUDIT'];
+  } else if (!isAiAuditEnabled) {
+    enabledModules = enabledModules.filter((m) => m !== 'AI_AUDIT' && m !== 'AI_AUDIT_QC');
+  }
+
   return {
     ...user,
     organization_name: org?.name || user.organization_name || null,
     organizationName: org?.name || user.organizationName || null,
     organization_code: org?.code || user.organization_code || null,
     organizationCode: org?.code || user.organizationCode || null,
+    organizationEnableAiAudit: isAiAuditEnabled,
+    organization_enable_ai_audit: isAiAuditEnabled,
+    enable_ai_audit: isAiAuditEnabled,
+    enableAiAudit: isAiAuditEnabled,
     organization: org ? {
       id: org.id,
       name: org.name,
       code: org.code,
       enabled_modules: enabledModules,
+      enabledModules: enabledModules,
+      enable_ai_audit: isAiAuditEnabled,
+      enableAiAudit: isAiAuditEnabled,
+      organizationEnableAiAudit: isAiAuditEnabled,
       has_active_subscription: hasActiveSubscription,
       hasActiveSubscription: hasActiveSubscription,
     } : null,
@@ -664,59 +696,134 @@ const releaseUserSeat = (userId) => {
 /**
  * Switches a user's active campaign without allocating extra concurrent seat licenses.
  * Dynamically resolves campaign-scoped role and permissions.
+ * If user is Organization Admin, Master Admin, or Project Manager, or if project exists in database/mockStore,
+ * allows switching to the campaign while keeping admin permissions/role or setting activeCampaign.
  */
 const switchCampaign = async (userId, campaignId) => {
   const mockStore = require('../../database/mockStore');
-  const assignments = mockStore.getUserCampaignAssignments(userId);
-  const target = assignments.find((a) => a.campaign_id === campaignId);
+  let user = await authModel.findUserById(userId);
+  if (!user) {
+    const allUsers = mockStore.data?.users || mockStore.users || [];
+    user = allUsers.find((u) => u.id === userId || u.email === userId) || null;
+    if (!user) {
+      throw new NotFoundError(`User '${userId}' not found.`);
+    }
+  }
 
+  const userRole = (user.role_slug || user.role || user.role_name || '').toUpperCase();
+  const isAdminOrManager = [
+    'MASTER_ADMIN',
+    'MASTER_ADMINISTRATOR',
+    'SUPER_ADMIN',
+    'ORGANIZATION_ADMIN',
+    'ORG_ADMIN',
+    'ORGANIZATION_ADMINISTRATOR',
+    'CLIENT_ADMIN',
+    'PROJECT_MANAGER',
+    'VENDOR_ADMIN',
+  ].includes(userRole);
+
+  const assignments = mockStore.getUserCampaignAssignments(userId) || [];
+  let target = assignments.find((a) => a.campaign_id === campaignId || a.id === campaignId || a.campaign_code === campaignId);
+
+  // If user is not directly assigned as an agent to this campaign, resolve campaign from DB or mockStore
   if (!target) {
-    throw new NotFoundError(`User is not assigned to campaign '${campaignId}'.`);
+    let project = null;
+    try {
+      const db = require('../../database/connection');
+      project = await db('projects')
+        .where('id', campaignId)
+        .orWhere('code', campaignId)
+        .orWhere('project_code', campaignId)
+        .first();
+    } catch (_) {}
+
+    if (!project) {
+      const allMockProjects = mockStore.data?.projects || mockStore.projects || [];
+      project = allMockProjects.find((p) =>
+        p.id === campaignId ||
+        p.code === campaignId ||
+        p.project_code === campaignId ||
+        p.name === campaignId
+      );
+    }
+
+    // If project exists OR user is Admin/PM, allow switching!
+    if (project || isAdminOrManager) {
+      target = {
+        campaign_id: project ? project.id : campaignId,
+        campaign_name: project ? (project.name || project.title || campaignId) : `Campaign ${campaignId}`,
+        campaign_code: project ? (project.project_code || project.code || campaignId) : campaignId,
+        team_id: project?.team_id || null,
+        module_setup: project?.enabled_modules || project?.type || ['CATI', 'CAPI', 'TVC'],
+        role_slug: user.role_slug || user.role || (isAdminOrManager ? userRole : 'CATI_AGENT'),
+        role_name: user.role_name || user.role || (isAdminOrManager ? userRole : 'Agent'),
+        role_id: user.role_id || null,
+      };
+    } else {
+      throw new NotFoundError(`User is not assigned to campaign '${campaignId}'.`);
+    }
   }
 
   // Derive campaign-scoped role and permissions
-  const roleSlug = (target.role_slug || '').toUpperCase();
+  const roleSlug = (target.role_slug || userRole || '').toUpperCase();
   let permissions = [];
-  switch (roleSlug) {
-    case 'CATI_AGENT':
-      permissions = ['field_cati:*', 'remote_cati:*', 'submissions:*', 'dialer:*', 'exam:*'];
-      break;
-    case 'CAPI_AUDITOR':
-      permissions = ['capi:*', 'exam:*', 'submissions:read'];
-      break;
-    case 'SUPER_AUDITOR':
-      permissions = ['super_audit:*', 'super-audit:*', 'capi:read', 'submissions:read', 'reports:read'];
-      break;
-    case 'TVC_AGENT':
-      permissions = ['tvc:*', 'dialer:*', 'submissions:read'];
-      break;
-    case 'FA_AGENT':
-      permissions = ['feedback:*', 'fa:*', 'dialer:*', 'submissions:read'];
-      break;
-    case 'VENDOR_ADMIN':
-      permissions = ['vendor:*', 'users:read', 'submissions:read'];
-      break;
-    case 'ORG_ADMIN':
-    case 'MASTER_ADMIN':
-      permissions = ['*'];
-      break;
-    default:
-      permissions = ['submissions:read'];
+  if (isAdminOrManager) {
+    // Preserve full or existing admin permissions
+    permissions = Array.isArray(user.permissions) && user.permissions.length > 0
+      ? user.permissions
+      : ['*'];
+  } else {
+    switch (roleSlug) {
+      case 'CATI_AGENT':
+        permissions = ['field_cati:*', 'remote_cati:*', 'submissions:*', 'dialer:*', 'exam:*', 'projects:read', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'];
+        break;
+      case 'CAPI_AUDITOR':
+      case 'CAPI_AGENT':
+        permissions = ['capi:*', 'exam:*', 'submissions:*', 'projects:read', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'];
+        break;
+      case 'SUPER_AUDITOR':
+        permissions = ['super_audit:*', 'super-audit:*', 'capi:*', 'submissions:*', 'reports:read', 'projects:read', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'];
+        break;
+      case 'TVC_AGENT':
+      case 'TELE_VERIFIER':
+      case 'TELE_CALLER':
+        permissions = ['tvc:*', 'dialer:*', 'submissions:*', 'projects:read', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'];
+        break;
+      case 'FA_AGENT':
+        permissions = ['feedback:*', 'fa:*', 'dialer:*', 'submissions:*', 'projects:read', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'];
+        break;
+      case 'VENDOR_ADMIN':
+        permissions = ['vendor:*', 'users:read', 'submissions:*', 'projects:read', 'projects:*', 'reports:read', 'tvc:*', 'capi:*', 'operations:*', 'realtime:*'];
+        break;
+      case 'ORG_ADMIN':
+      case 'ORGANIZATION_ADMIN':
+      case 'CLIENT_ADMIN':
+      case 'PROJECT_MANAGER':
+      case 'MASTER_ADMIN':
+      case 'SUPER_ADMIN':
+        permissions = ['*'];
+        break;
+      default:
+        permissions = ['submissions:read', 'projects:read', 'operations:*', 'tvc:*'];
+    }
   }
 
-  const user = await authModel.findUserById(userId);
+  const effectiveRole = isAdminOrManager ? userRole : roleSlug;
+  const effectiveRoleName = isAdminOrManager ? (user.role_name || userRole) : (target.role_name || roleSlug);
+
   const updatedUserContext = {
     ...sanitizeUser(user),
-    role: roleSlug,
-    role_name: target.role_name,
-    role_id: target.role_id,
+    role: effectiveRole,
+    role_name: effectiveRoleName,
+    role_id: target.role_id || user.role_id,
     activeCampaign: {
       id: target.campaign_id,
       name: target.campaign_name,
       code: target.campaign_code,
       team_id: target.team_id,
       module_setup: target.module_setup,
-      role: roleSlug,
+      role: effectiveRole,
     },
     permissions,
   };
@@ -727,7 +834,7 @@ const switchCampaign = async (userId, campaignId) => {
     tokens,
     user: updatedUserContext,
     activeCampaign: updatedUserContext.activeCampaign,
-    role: roleSlug,
+    role: effectiveRole,
     permissions,
   };
 };

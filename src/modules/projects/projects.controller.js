@@ -148,6 +148,93 @@ class ProjectsController {
   }
 
   /**
+   * Get dynamic list of Assembly Constituencies (ACs) scoped strictly to user's role and assigned project codes.
+   *
+   * @route GET /api/v1/projects/:id/constituencies
+   */
+  async getCampaignConstituencies(req, res, next) {
+    try {
+      const constituencies = await projectsService.getCampaignConstituencies(
+        req.params.id,
+        req.tenantContext
+      );
+      return success(res, constituencies, 'Campaign constituencies retrieved successfully');
+    } catch (err) {
+      return next(err);
+    }
+  }
+
+  /**
+   * Atomically reserve / lock next campaign lead for current agent.
+   * Guarantees 1 lead to 1 agent.
+   *
+   * @route POST /api/v1/projects/:id/lock-next-lead
+   */
+  async lockNextLead(req, res, next) {
+    try {
+      const lead = await projectsService.lockNextCampaignLead(
+        req.params.id,
+        req.body || {},
+        req.tenantContext
+      );
+      if (!lead) {
+        return success(res, null, 'No pending leads available in selected AC / Campaign');
+      }
+      return success(res, lead, 'Next lead locked and dispatched successfully');
+    } catch (err) {
+      return next(err);
+    }
+  }
+
+  /**
+   * Get unique project_code distribution with lead counts and vendor assignments.
+   * e.g., Total 1000 leads: ABC = 100 leads, XYZ = 400 leads, POL = 500 leads.
+   *
+   * @route GET /api/v1/projects/:id/project-code-distribution
+   */
+  async getProjectCodeDistribution(req, res, next) {
+    try {
+      const result = await projectsService.getProjectCodeDistribution(req.params.id, req.tenantContext);
+      return success(res, result, 'Lead distribution by project code retrieved successfully');
+    } catch (err) {
+      return next(err);
+    }
+  }
+
+  /**
+   * Assign or redistribute a project_code to a designated Vendor.
+   * Organization Admin can reassign/redistribute an already assigned project_code anytime.
+   *
+   * @route POST /api/v1/projects/:id/assign-project-code
+   */
+  async assignProjectCode(req, res, next) {
+    try {
+      const { projectCode, vendorId, options } = req.body;
+      const result = await projectsService.assignProjectCode(
+        req.params.id,
+        projectCode,
+        vendorId,
+        options,
+        req.tenantContext
+      );
+
+      logOperation({
+        req,
+        action: result.isRedistribution ? 'REDISTRIBUTE_PROJECT_CODE' : 'ASSIGN_PROJECT_CODE',
+        module: 'PROJECTS',
+        entityType: 'projects',
+        entityId: req.params.id,
+        newValues: { projectCode, vendorId },
+        metadata: { result },
+      });
+
+      return success(res, result, result.message || 'Project code successfully assigned to vendor');
+    } catch (err) {
+      return next(err);
+    }
+  }
+
+  /**
    * Reallocate leads from one vendor to another.
    */
   async reallocateVendorLeads(req, res, next) {
@@ -357,6 +444,66 @@ class ProjectsController {
       const hourlySyncService = require('../../services/hourlyCampaignSync.service');
       const result = await hourlySyncService.syncAllActiveCampaigns({ triggeredBy: 'MANUAL_TRIGGER' });
       return success(res, result, `Sweep completed: ${result.totalNewLeads} new leads ingested across ${result.campaignsProcessed} campaigns.`);
+    } catch (err) {
+      return next(err);
+    }
+  }
+
+  /**
+   * Get vendors associated/assigned to a project.
+   * Route: GET /api/v1/projects/:id/vendors
+   */
+  async getProjectVendors(req, res, next) {
+    try {
+      const vendors = await projectsService.getProjectVendors(req.params.id, req.tenantContext);
+      return success(res, vendors, 'Project vendors retrieved successfully');
+    } catch (err) {
+      return next(err);
+    }
+  }
+
+  /**
+   * Preview uncompleted leads for a campaign on a specific date.
+   * Route: GET /api/v1/projects/:id/rechain-preview
+   */
+  async previewRechain(req, res, next) {
+    try {
+      const { date, vendorId } = req.query;
+      const preview = await projectsService.previewRechain(
+        req.params.id,
+        { date, vendorId },
+        req.tenantContext
+      );
+      return success(res, preview, 'Rechain preview retrieved successfully');
+    } catch (err) {
+      return next(err);
+    }
+  }
+
+  /**
+   * Rechain uncompleted leads from a specific historical date into today's active survey queue.
+   * Route: POST /api/v1/projects/:id/rechain
+   */
+  async rechainLeads(req, res, next) {
+    try {
+      const { date, vendorId } = req.body;
+      const result = await projectsService.rechainCampaignLeads(
+        req.params.id,
+        { date, vendorId },
+        req.tenantContext
+      );
+
+      logOperation({
+        req,
+        action: 'RECHAIN_CAMPAIGN_LEADS',
+        module: 'PROJECTS',
+        entityType: 'projects',
+        entityId: req.params.id,
+        newValues: { date, vendorId, rechainedCount: result.rechainedCount },
+        metadata: { message: result.message },
+      });
+
+      return success(res, result, result.message);
     } catch (err) {
       return next(err);
     }

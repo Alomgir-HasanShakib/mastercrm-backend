@@ -92,6 +92,7 @@ const projectsRoutes = require('../modules/projects').projectsRoutes;
 const schemaEngineRoutes = require('../modules/schema-engine').routes;
 const systemSettingsRoutes = require('../modules/system-settings/system-settings.routes');
 const voiceFraudRoutes = require('../modules/voice-fraud').routes;
+const errorLogsRoutes = require('../modules/system/errorLogs.routes');
 
 // Authentication
 router.use('/auth', authRoutes);
@@ -179,6 +180,10 @@ router.use('/lookups', ...subscriptionGate, lookupRoutes);
 
 // System Settings & Telephony Configuration (MASTER_ADMIN only — auth enforced inside route)
 router.use('/system-settings', systemSettingsRoutes);
+
+// Master Admin System Error Logs Feature
+router.use('/system/error-logs', errorLogsRoutes);
+router.use('/error-logs', errorLogsRoutes);
 
 module.exports = router;
 

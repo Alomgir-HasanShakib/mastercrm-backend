@@ -7,7 +7,7 @@ const db = require('../../database/connection');
 const { withDbFallback } = db;
 const mockStore = require('../../database/mockStore');
 
-const DEFAULT_MODULES = ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'];
+const DEFAULT_MODULES = ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT', 'AI_AUDIT'];
 
 const normalizeOrgModules = (modules) => {
   if (!modules) return [...DEFAULT_MODULES];
@@ -38,6 +38,11 @@ const normalizeOrgModules = (modules) => {
     super_audit: 'SUPER_AUDIT',
     superaudit: 'SUPER_AUDIT',
     'super-audit': 'SUPER_AUDIT',
+    ai_audit: 'AI_AUDIT',
+    ai_audit_qc: 'AI_AUDIT',
+    'ai-audit': 'AI_AUDIT',
+    aiaudit: 'AI_AUDIT',
+    ai: 'AI_AUDIT',
   };
 
   const normalized = new Set();
@@ -90,9 +95,18 @@ const findAllOrganizations = async (filters = {}, pagination = {}) => {
       const validSorts = ['id', 'name', 'created_at', 'code', 'status'];
       const sort = validSorts.includes(sortBy) ? sortBy : 'created_at';
 
-      const rows = await query.orderBy(sort, sortOrder.toLowerCase()).limit(limit).offset(offset);
+      const rows = await query
+        .select(
+          'organizations.*',
+          db.raw('(SELECT COUNT(*) FROM users WHERE users.organization_id = organizations.id AND users.deleted_at IS NULL) as total_users')
+        )
+        .orderBy(sort, sortOrder.toLowerCase())
+        .limit(limit)
+        .offset(offset);
       return rows.map((r) => ({
         ...r,
+        total_users: Math.max(parseInt(r.total_users || 0, 10), 1),
+        totalUsers: Math.max(parseInt(r.total_users || 0, 10), 1),
         code: r.code || r.slug,
         status: r.status || (r.is_active ? 'ACTIVE' : 'INACTIVE'),
         enabled_modules: normalizeOrgModules(r.enabled_modules || r.settings?.enabled_modules),
@@ -100,12 +114,19 @@ const findAllOrganizations = async (filters = {}, pagination = {}) => {
     },
     () => {
       const orgs = mockStore.find('organizations', filters, pagination) || [];
-      return orgs.map((r) => ({
-        ...r,
-        code: r.code || r.slug,
-        status: r.status || (r.is_active ? 'ACTIVE' : 'INACTIVE'),
-        enabled_modules: normalizeOrgModules(r.enabled_modules || r.settings?.enabled_modules),
-      }));
+      const allUsers = mockStore.data?.users || [];
+      return orgs.map((r) => {
+        const userCount = allUsers.filter((u) => (u.organization_id === r.id || (!u.organization_id && r.id === mockStore.data?.organizations?.[0]?.id)) && !u.deleted_at).length;
+        const total = Math.max(userCount, 1);
+        return {
+          ...r,
+          total_users: total,
+          totalUsers: total,
+          code: r.code || r.slug,
+          status: r.status || (r.is_active ? 'ACTIVE' : 'INACTIVE'),
+          enabled_modules: normalizeOrgModules(r.enabled_modules || r.settings?.enabled_modules),
+        };
+      });
     }
   );
 };
@@ -149,22 +170,56 @@ const countOrganizations = async (filters = {}) => {
 const findOrganizationById = async (id) => {
   return withDbFallback(
     async () => {
-      const org = await db('organizations').where('id', id).first();
-      return org ? {
+      const org = await db('organizations')
+        .select(
+          'organizations.*',
+          db.raw('(SELECT COUNT(*) FROM users WHERE users.organization_id = organizations.id AND users.deleted_at IS NULL) as total_users')
+        )
+        .where('organizations.id', id)
+        .first();
+      if (!org) return null;
+      let modules = normalizeOrgModules(org.enabled_modules || org.settings?.enabled_modules);
+      const isAiAudit = Boolean(org.enable_ai_audit || org.enableAiAudit || modules.includes('AI_AUDIT'));
+      if (isAiAudit && !modules.includes('AI_AUDIT')) {
+        modules.push('AI_AUDIT');
+      } else if (!isAiAudit && modules.includes('AI_AUDIT')) {
+        modules = modules.filter(m => m !== 'AI_AUDIT' && m !== 'AI_AUDIT_QC');
+      }
+      const total = Math.max(parseInt(org.total_users || 0, 10), 1);
+      return {
         ...org,
+        total_users: total,
+        totalUsers: total,
         code: org.code || org.slug,
         status: org.status || (org.is_active ? 'ACTIVE' : 'INACTIVE'),
-        enabled_modules: normalizeOrgModules(org.enabled_modules || org.settings?.enabled_modules),
-      } : null;
+        enable_ai_audit: isAiAudit,
+        enableAiAudit: isAiAudit,
+        enabled_modules: modules,
+      };
     },
     () => {
       const org = mockStore.findById('organizations', id);
-      return org ? {
+      if (!org) return null;
+      let modules = normalizeOrgModules(org.enabled_modules || org.settings?.enabled_modules);
+      const isAiAudit = Boolean(org.enable_ai_audit || org.enableAiAudit || modules.includes('AI_AUDIT'));
+      if (isAiAudit && !modules.includes('AI_AUDIT')) {
+        modules.push('AI_AUDIT');
+      } else if (!isAiAudit && modules.includes('AI_AUDIT')) {
+        modules = modules.filter(m => m !== 'AI_AUDIT' && m !== 'AI_AUDIT_QC');
+      }
+      const allUsers = mockStore.data?.users || [];
+      const userCount = allUsers.filter((u) => (u.organization_id === org.id || (!u.organization_id && org.id === mockStore.data?.organizations?.[0]?.id)) && !u.deleted_at).length;
+      const total = Math.max(userCount, 1);
+      return {
         ...org,
+        total_users: total,
+        totalUsers: total,
         code: org.code || org.slug,
         status: org.status || (org.is_active ? 'ACTIVE' : 'INACTIVE'),
-        enabled_modules: normalizeOrgModules(org.enabled_modules || org.settings?.enabled_modules),
-      } : null;
+        enable_ai_audit: isAiAudit,
+        enableAiAudit: isAiAudit,
+        enabled_modules: modules,
+      };
     }
   );
 };
@@ -214,6 +269,15 @@ const createOrganization = async (data) => {
   return withDbFallback(
     async () => {
       const orgSlug = (data.code || data.slug || data.name || 'org').toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+      const rawModules = data.enabledModules || data.enabled_modules;
+      const normalizedModules = normalizeOrgModules(rawModules);
+      const hasAiAudit = normalizedModules.includes('AI_AUDIT');
+      const enableAiAudit = data.enableAiAudit !== undefined
+        ? Boolean(data.enableAiAudit)
+        : (data.enable_ai_audit !== undefined
+          ? Boolean(data.enable_ai_audit)
+          : (rawModules !== undefined ? hasAiAudit : true));
+
       const payload = {
         name: data.name,
         slug: orgSlug,
@@ -227,8 +291,8 @@ const createOrganization = async (data) => {
         is_active: data.status ? data.status === 'ACTIVE' : (data.isActive !== undefined ? Boolean(data.isActive) : true),
         max_users: data.maxUsers !== undefined ? data.maxUsers : 50,
         max_created_users: data.maxCreatedUsers !== undefined ? data.maxCreatedUsers : (data.max_created_users || 200),
-        enable_ai_audit: data.enableAiAudit !== undefined ? data.enableAiAudit : true,
-        enabled_modules: JSON.stringify(normalizeOrgModules(data.enabledModules || data.enabled_modules)),
+        enable_ai_audit: enableAiAudit,
+        enabled_modules: JSON.stringify(normalizedModules),
         settings: JSON.stringify(data.settings || {}),
         created_at: new Date(),
         updated_at: new Date(),
@@ -242,14 +306,22 @@ const createOrganization = async (data) => {
       };
     },
     () => {
-      const normalizedModules = normalizeOrgModules(data.enabledModules || data.enabled_modules);
+      const rawModules = data.enabledModules || data.enabled_modules;
+      const normalizedModules = normalizeOrgModules(rawModules);
+      const hasAiAudit = normalizedModules.includes('AI_AUDIT');
+      const enableAiAudit = data.enableAiAudit !== undefined
+        ? Boolean(data.enableAiAudit)
+        : (data.enable_ai_audit !== undefined
+          ? Boolean(data.enable_ai_audit)
+          : (rawModules !== undefined ? hasAiAudit : true));
+
       return mockStore.insert('organizations', {
         name: data.name,
         code: (data.code || 'ORG').toUpperCase(),
         slug: (data.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
         status: data.status || 'ACTIVE',
         max_users: data.maxUsers !== undefined ? data.maxUsers : 50,
-        enable_ai_audit: data.enableAiAudit !== undefined ? data.enableAiAudit : true,
+        enable_ai_audit: enableAiAudit,
         enabled_modules: normalizedModules,
         settings: typeof data.settings === 'object' ? JSON.stringify(data.settings) : data.settings,
       });
@@ -292,11 +364,15 @@ const updateOrganization = async (id, data) => {
       if (data.maxCreatedUsers !== undefined || data.max_created_users !== undefined) {
         payload.max_created_users = data.maxCreatedUsers || data.max_created_users;
       }
+      if (data.enabled_modules !== undefined || data.enabledModules !== undefined) {
+        const normalized = normalizeOrgModules(data.enabled_modules || data.enabledModules);
+        payload.enabled_modules = JSON.stringify(normalized);
+        if (data.enableAiAudit === undefined && data.enable_ai_audit === undefined) {
+          payload.enable_ai_audit = normalized.includes('AI_AUDIT');
+        }
+      }
       if (data.enableAiAudit !== undefined) payload.enable_ai_audit = Boolean(data.enableAiAudit);
       if (data.enable_ai_audit !== undefined) payload.enable_ai_audit = Boolean(data.enable_ai_audit);
-      if (data.enabled_modules !== undefined || data.enabledModules !== undefined) {
-        payload.enabled_modules = JSON.stringify(normalizeOrgModules(data.enabled_modules || data.enabledModules));
-      }
       if (data.settings !== undefined) {
         payload.settings = typeof data.settings === 'object' ? JSON.stringify(data.settings) : data.settings;
       }
@@ -313,8 +389,14 @@ const updateOrganization = async (id, data) => {
     () => {
       const updatePayload = { ...data };
       if (data.enabled_modules !== undefined || data.enabledModules !== undefined) {
-        updatePayload.enabled_modules = normalizeOrgModules(data.enabled_modules || data.enabledModules);
+        const normalized = normalizeOrgModules(data.enabled_modules || data.enabledModules);
+        updatePayload.enabled_modules = normalized;
+        if (data.enableAiAudit === undefined && data.enable_ai_audit === undefined) {
+          updatePayload.enable_ai_audit = normalized.includes('AI_AUDIT');
+        }
       }
+      if (data.enableAiAudit !== undefined) updatePayload.enable_ai_audit = Boolean(data.enableAiAudit);
+      if (data.enable_ai_audit !== undefined) updatePayload.enable_ai_audit = Boolean(data.enable_ai_audit);
       return mockStore.update('organizations', id, updatePayload);
     }
   );

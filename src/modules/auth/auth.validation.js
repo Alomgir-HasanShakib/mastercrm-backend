@@ -42,7 +42,6 @@ const refreshSchema = Joi.object({
 
 /**
  * Validation schema for changing user password.
- * Requires min 8 characters, at least 1 uppercase, 1 lowercase, and 1 number.
  */
 const changePasswordSchema = Joi.object({
   currentPassword: Joi.string()
@@ -51,12 +50,9 @@ const changePasswordSchema = Joi.object({
       'any.required': 'Current password is required',
     }),
   newPassword: Joi.string()
-    .min(8)
-    .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
+    .min(1)
     .required()
     .messages({
-      'string.min': 'New password must be at least 8 characters long',
-      'string.pattern.base': 'New password must contain at least one uppercase letter, one lowercase letter, and one number',
       'any.required': 'New password is required',
     }),
 });

@@ -41,10 +41,17 @@ const surveyLeadSchema = Joi.object({
   duration: Joi.number().optional(),
 }).unknown(true);
 
+const assignProjectCodeSchema = Joi.object({
+  projectCode: Joi.string().trim().required(),
+  vendorId: Joi.string().trim().required(),
+  options: Joi.object().optional(),
+});
+
 module.exports = {
   allocateLeadsSchema,
   reallocateVendorLeadsSchema,
   bindQuestionnaireSchema,
   createCampaignQuestionnaireSchema,
   surveyLeadSchema,
+  assignProjectCodeSchema,
 };

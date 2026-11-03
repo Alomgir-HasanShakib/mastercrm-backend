@@ -26,9 +26,9 @@ const getPricingConfig = async () => {
         const [inserted] = await db('subscription_pricing')
           .insert({
             id: 'default',
-            base_price: 499.00,
-            ai_audit_price: 199.00,
-            currency: 'USD',
+            base_price: 10.00,
+            ai_audit_price: 50.00,
+            currency: 'BDT',
             updated_at: new Date(),
           })
           .returning('*');
@@ -45,9 +45,9 @@ const getPricingConfig = async () => {
     () => {
       const config = (mockStore.data?.subscription_pricing || [])[0] || {
         id: 'default',
-        base_price: 499.00,
-        ai_audit_price: 199.00,
-        currency: 'USD',
+        base_price: 10.00,
+        ai_audit_price: 50.00,
+        currency: 'BDT',
         updated_at: new Date(),
       };
       return {
@@ -467,27 +467,39 @@ const createOrRenewSubscription = async (data = {}, tenantContext = {}) => {
   const pricing = await getPricingConfig();
   const planName = (data.planName || 'ENTERPRISE').toUpperCase();
   const billingCycle = (data.billingCycle || 'MONTHLY').toUpperCase();
-  const currency = (data.currency || pricing.currency || 'USD').toUpperCase();
-  const hasAiAudit = data.hasAiAudit !== undefined
-    ? Boolean(data.hasAiAudit)
-    : (data.aiLicense !== undefined ? parseInt(data.aiLicense, 10) > 0 : false);
+  const currency = (data.currency || pricing.currency || 'BDT').toUpperCase();
+  let hasAiAudit = false;
+  if (data.aiLicense !== undefined && parseInt(data.aiLicense, 10) === 0) {
+    hasAiAudit = false;
+  } else if (data.hasAiAudit !== undefined) {
+    hasAiAudit = Boolean(data.hasAiAudit);
+  } else if (data.aiLicense !== undefined) {
+    hasAiAudit = parseInt(data.aiLicense, 10) > 0;
+  }
   const autoRenew = data.autoRenew !== undefined ? Boolean(data.autoRenew) : true;
   const userCapacity = parseInt(data.userCapacity || data.maxCreatedUsers || 50, 10);
   const userLicense = parseInt(data.userLicense || data.maxConcurrentSeats || data.maxSeats || 10, 10);
   const aiLicense = hasAiAudit ? parseInt(data.aiLicense || data.maxAiAuditors || data.auditAiQuota || 2, 10) : 0;
 
-  // Calculate pricing
-  const basePrice = data.basePrice !== undefined ? parseFloat(data.basePrice) : pricing.basePrice;
-  const aiAuditPrice = hasAiAudit
-    ? (data.aiAuditPrice !== undefined ? parseFloat(data.aiAuditPrice) : pricing.aiAuditPrice)
+  // Standard BDT Transparent Pricing Model:
+  // Base: 10 Tk / user seat / month (e.g. 100 users = 1,000 Tk)
+  // AI Audit: 50 Tk / AI worker license / month (e.g. 5 AI workers = 250 Tk)
+  const seatRate = 10;
+  const aiAuditWorkerRate = 50;
+  const baseMonthlyPrice = data.basePrice !== undefined ? parseFloat(data.basePrice) : (userLicense * seatRate);
+  const aiAuditMonthlyPrice = hasAiAudit
+    ? (data.aiAuditPrice !== undefined ? parseFloat(data.aiAuditPrice) : (aiLicense * aiAuditWorkerRate))
     : 0;
 
-  // Annual discount: 10 months for price of 12
-  const cycleMultiplier = billingCycle === 'ANNUAL' ? 10 : 1;
-  const subtotal = (basePrice + aiAuditPrice) * cycleMultiplier;
-  const taxRate = 0.18; // 18% standard business VAT/GST
-  const taxAmount = parseFloat((subtotal * taxRate).toFixed(2));
-  const totalAmount = parseFloat((subtotal + taxAmount).toFixed(2));
+  const durationMonths = parseInt(data.durationMonths, 10) || (billingCycle === 'ANNUAL' ? 12 : 1);
+  const isAnnual = billingCycle === 'ANNUAL' || durationMonths >= 12;
+  const monthlySum = baseMonthlyPrice + aiAuditMonthlyPrice;
+  const rawSubtotal = monthlySum * durationMonths;
+  // 10% discount for annual billing
+  const discountMultiplier = isAnnual ? 0.90 : 1;
+  const subtotal = data.totalPrice !== undefined ? parseFloat(data.totalPrice) : Math.round(rawSubtotal * discountMultiplier);
+  const taxAmount = 0;
+  const totalAmount = subtotal;
 
   return withDbFallback(
     async () => {
@@ -538,8 +550,8 @@ const createOrRenewSubscription = async (data = {}, tenantContext = {}) => {
           id: subId,
           organization_id: organizationId,
           plan_name: planName,
-          base_price: basePrice,
-          ai_audit_price: aiAuditPrice,
+          base_price: baseMonthlyPrice,
+          ai_audit_price: aiAuditMonthlyPrice,
           total_price: subtotal,
           currency,
           has_ai_audit: hasAiAudit,
@@ -556,9 +568,32 @@ const createOrRenewSubscription = async (data = {}, tenantContext = {}) => {
         })
         .returning('*');
 
-      // Update organization AI Audit capability and User Quotas
+      // Resolve updated enabled_modules list
+      let currentModules = org.enabled_modules || ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'];
+      if (typeof currentModules === 'string') {
+        try {
+          currentModules = JSON.parse(currentModules);
+        } catch {
+          currentModules = currentModules.split(',').map((s) => s.trim());
+        }
+      }
+      if (!Array.isArray(currentModules)) {
+        currentModules = ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'];
+      }
+
+      let updatedModules = [...currentModules];
+      if (hasAiAudit) {
+        if (!updatedModules.includes('AI_AUDIT')) {
+          updatedModules.push('AI_AUDIT');
+        }
+      } else {
+        updatedModules = updatedModules.filter((m) => m !== 'AI_AUDIT' && m !== 'AI_AUDIT_QC');
+      }
+
+      // Update organization AI Audit capability, enabled_modules, and User Quotas
       await db('organizations').where('id', organizationId).update({
         enable_ai_audit: hasAiAudit,
+        enabled_modules: JSON.stringify(updatedModules),
         max_created_users: userCapacity,
         max_concurrent_seats: userLicense,
         max_users: userLicense,
@@ -587,23 +622,23 @@ const createOrRenewSubscription = async (data = {}, tenantContext = {}) => {
         },
         lineItems: [
           {
-            description: `Master CRM Core Platform (${billingCycle})`,
-            unitPrice: basePrice,
-            multiplier: cycleMultiplier,
-            amount: basePrice * cycleMultiplier,
+            description: `User Seats Licensing (${userLicense} seats @ 10 ${currency}/seat/mo)`,
+            unitPrice: seatRate,
+            multiplier: userLicense * durationMonths,
+            amount: baseMonthlyPrice * durationMonths,
           },
           hasAiAudit
             ? {
-                description: `AI Voice & Speech Intelligence Engine Add-On (${billingCycle})`,
-                unitPrice: aiAuditPrice,
-                multiplier: cycleMultiplier,
-                amount: aiAuditPrice * cycleMultiplier,
+                description: `AI Audit Worker Licenses (${aiLicense} workers @ 50 ${currency}/worker/mo)`,
+                unitPrice: aiAuditWorkerRate,
+                multiplier: aiLicense * durationMonths,
+                amount: aiAuditMonthlyPrice * durationMonths,
               }
             : null,
         ].filter(Boolean),
-        subtotal,
-        taxRate: '18%',
-        taxAmount,
+        subtotal: rawSubtotal,
+        discount: rawSubtotal - subtotal,
+        taxAmount: 0,
         totalPaid: totalAmount,
         currency,
         paymentStatus: 'PAID',
@@ -619,8 +654,8 @@ const createOrRenewSubscription = async (data = {}, tenantContext = {}) => {
           organization_id: organizationId,
           invoice_number: invNum,
           receipt_number: recNum,
-          base_amount: basePrice * cycleMultiplier,
-          ai_audit_amount: aiAuditPrice * cycleMultiplier,
+          base_amount: baseMonthlyPrice * durationMonths,
+          ai_audit_amount: aiAuditMonthlyPrice * durationMonths,
           tax_amount: taxAmount,
           total_amount: totalAmount,
           currency,
@@ -677,11 +712,14 @@ const createOrRenewSubscription = async (data = {}, tenantContext = {}) => {
         id: subId,
         organization_id: organizationId,
         plan_name: planName,
-        base_price: basePrice,
-        ai_audit_price: aiAuditPrice,
+        base_price: baseMonthlyPrice,
+        ai_audit_price: aiAuditMonthlyPrice,
         total_price: subtotal,
         currency,
         has_ai_audit: hasAiAudit,
+        user_capacity: userCapacity,
+        user_license: userLicense,
+        ai_license: aiLicense,
         billing_cycle: billingCycle,
         start_date: now,
         end_date: endDate,
@@ -722,6 +760,29 @@ const createOrRenewSubscription = async (data = {}, tenantContext = {}) => {
 
       const orgItem = (mockStore.data?.organizations || []).find((o) => o.id === organizationId);
       if (orgItem) {
+        let currentModules = orgItem.enabled_modules || ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'];
+        if (typeof currentModules === 'string') {
+          try {
+            currentModules = JSON.parse(currentModules);
+          } catch {
+            currentModules = currentModules.split(',').map((s) => s.trim());
+          }
+        }
+        if (!Array.isArray(currentModules)) {
+          currentModules = ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'];
+        }
+
+        let updatedModules = [...currentModules];
+        if (hasAiAudit) {
+          if (!updatedModules.includes('AI_AUDIT')) {
+            updatedModules.push('AI_AUDIT');
+          }
+        } else {
+          updatedModules = updatedModules.filter((m) => m !== 'AI_AUDIT' && m !== 'AI_AUDIT_QC');
+        }
+
+        orgItem.enabled_modules = updatedModules;
+        orgItem.enabledModules = updatedModules;
         orgItem.enable_ai_audit = hasAiAudit;
         orgItem.enableAiAudit = hasAiAudit;
         orgItem.max_created_users = userCapacity;

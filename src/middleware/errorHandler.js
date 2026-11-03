@@ -7,6 +7,7 @@ const { AppError } = require('../utils/errors');
 const { error: sendErrorResponse } = require('../utils/response');
 const logger = require('../utils/logger');
 const config = require('../config');
+const errorLogsService = require('../modules/system/errorLogs.service');
 
 /**
  * Global Express error handling middleware.
@@ -73,6 +74,46 @@ const errorHandler = (err, req, res, next) => { // eslint-disable-line no-unused
     logger.warn(`Client Error: ${err.message}`, logData);
   }
 
+  // Centralized System Error Logging Telemetry (all 4xx and 5xx errors)
+  if (statusCode >= 400) {
+    try {
+      const user = req.user
+        ? {
+            id: req.user.id || req.user.userId,
+            email: req.user.email,
+            role: req.user.role || req.user.role_slug || req.user.role_name,
+          }
+        : null;
+
+      const organization =
+        req.tenantContext?.organizationId ||
+        req.user?.organization_id ||
+        req.headers?.['x-organization-id'] ||
+        null;
+      const ip = req.ip || req.headers?.['x-forwarded-for'] || req.socket?.remoteAddress;
+      const userAgent = req.headers ? req.headers['user-agent'] : null;
+
+      errorLogsService
+        .logError({
+          path: req.originalUrl || req.url,
+          method: req.method,
+          status: statusCode,
+          statusCode,
+          errorCode: code,
+          message: err.message || message,
+          stack: err.stack,
+          user,
+          organization,
+          ip,
+          userAgent,
+          details,
+          correlationId,
+          source: 'BACKEND',
+        })
+        .catch(() => {});
+    } catch (_) {}
+  }
+
   // Never expose raw internal details/stack in production if unhandled
   const safeMessage = (statusCode >= 500 && config.app.env === 'production')
     ? 'An unexpected error occurred. Please contact support.'
@@ -98,6 +139,25 @@ const errorHandler = (err, req, res, next) => { // eslint-disable-line no-unused
  * @param {import('express').Response} res
  */
 const notFoundHandler = (req, res) => {
+  try {
+    errorLogsService
+      .logError({
+        path: req.originalUrl || req.url,
+        method: req.method,
+        status: 404,
+        statusCode: 404,
+        errorCode: 'ROUTE_NOT_FOUND',
+        message: `Cannot ${req.method} ${req.originalUrl || req.url}`,
+        user: req.user || null,
+        organization: req.tenantContext?.organizationId || req.user?.organization_id || null,
+        ip: req.ip || req.headers?.['x-forwarded-for'],
+        userAgent: req.headers ? req.headers['user-agent'] : null,
+        correlationId: req.correlationId,
+        source: 'BACKEND',
+      })
+      .catch(() => {});
+  } catch (_) {}
+
   return sendErrorResponse(
     res,
     {

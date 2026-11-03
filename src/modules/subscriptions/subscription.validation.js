@@ -17,14 +17,19 @@ const listSubscriptionsSchema = Joi.object({
 const createSubscriptionSchema = Joi.object({
   organizationId: Joi.string().uuid().optional(),
   planName: Joi.string().trim().uppercase().default('ENTERPRISE'),
-  billingCycle: Joi.string().valid('MONTHLY', 'ANNUAL').default('MONTHLY'),
+  billingCycle: Joi.string().valid('MONTHLY', 'ANNUAL', 'QUARTERLY').default('MONTHLY'),
   hasAiAudit: Joi.boolean().default(true),
   currency: Joi.string().trim().uppercase().max(10).optional(),
-  basePrice: Joi.number().positive().optional(),
+  basePrice: Joi.number().min(0).optional(),
   aiAuditPrice: Joi.number().min(0).optional(),
+  userCapacity: Joi.number().integer().min(1).optional(),
+  userLicense: Joi.number().integer().min(1).optional(),
+  aiLicense: Joi.number().integer().min(0).optional(),
+  durationMonths: Joi.number().integer().min(1).optional(),
   paymentMethod: Joi.string().trim().default('CREDIT_CARD'),
+  paymentRef: Joi.string().trim().allow('').optional(),
   autoRenew: Joi.boolean().default(true),
-});
+}).unknown(true);
 
 const updatePricingSchema = Joi.object({
   basePrice: Joi.number().positive().optional(),

@@ -96,9 +96,20 @@ const fetchTableRecords = async (tableName, orgId, projectId, options = {}) => {
 
         await client.connect();
         try {
-          const res = await client.query(`SELECT * FROM "${safeTable}" LIMIT ${requestedLimit}`);
+          // Strictly pull in LIFO order (latest records first)
+          let res;
+          try {
+            res = await client.query(`SELECT * FROM "${safeTable}" ORDER BY id DESC LIMIT ${requestedLimit}`);
+          } catch {
+            try {
+              res = await client.query(`SELECT * FROM "${safeTable}" ORDER BY created_at DESC LIMIT ${requestedLimit}`);
+            } catch {
+              res = await client.query(`SELECT * FROM "${safeTable}" LIMIT ${requestedLimit}`);
+              if (res.rows && res.rows.length > 0) res.rows.reverse(); // Fallback LIFO reversal
+            }
+          }
           if (res.rows && res.rows.length > 0) {
-            logger.info(`[HourlyCampaignSync] Fetched ${res.rows.length} rows from remote ${sourceInfo} table '${safeTable}'.`);
+            logger.info(`[HourlyCampaignSync] Fetched ${res.rows.length} rows (LIFO order) from remote ${sourceInfo} table '${safeTable}'.`);
             return { rows: res.rows, sourceInfo };
           }
         } finally {
@@ -117,9 +128,16 @@ const fetchTableRecords = async (tableName, orgId, projectId, options = {}) => {
         });
 
         try {
-          const [rows] = await conn.query(`SELECT * FROM \`${safeTable}\` LIMIT ${requestedLimit}`);
+          let rows;
+          try {
+            const [r] = await conn.query(`SELECT * FROM \`${safeTable}\` ORDER BY id DESC LIMIT ${requestedLimit}`);
+            rows = r;
+          } catch {
+            const [r] = await conn.query(`SELECT * FROM \`${safeTable}\` LIMIT ${requestedLimit}`);
+            rows = Array.isArray(r) ? r.reverse() : r;
+          }
           if (Array.isArray(rows) && rows.length > 0) {
-            logger.info(`[HourlyCampaignSync] Fetched ${rows.length} rows from remote MySQL ${sourceInfo} table '${safeTable}'.`);
+            logger.info(`[HourlyCampaignSync] Fetched ${rows.length} rows (LIFO order) from remote MySQL ${sourceInfo} table '${safeTable}'.`);
             return { rows, sourceInfo };
           }
         } finally {
@@ -131,22 +149,32 @@ const fetchTableRecords = async (tableName, orgId, projectId, options = {}) => {
     }
   }
 
-  // 2. Check local PostgreSQL database
+  // 2. Check local PostgreSQL database (Strict LIFO order)
   try {
     const hasLocalTable = await db.schema.hasTable(safeTable);
     if (hasLocalTable) {
-      const localRows = await db(safeTable).select('*').limit(requestedLimit);
-      logger.info(`[HourlyCampaignSync] Fetched ${localRows.length} rows from local table '${safeTable}'.`);
+      let localRows;
+      try {
+        localRows = await db(safeTable).select('*').orderBy('id', 'desc').limit(requestedLimit);
+      } catch {
+        try {
+          localRows = await db(safeTable).select('*').orderBy('created_at', 'desc').limit(requestedLimit);
+        } catch {
+          localRows = await db(safeTable).select('*').limit(requestedLimit);
+          if (Array.isArray(localRows)) localRows.reverse();
+        }
+      }
+      logger.info(`[HourlyCampaignSync] Fetched ${localRows.length} rows (LIFO order) from local table '${safeTable}'.`);
       return { rows: localRows, sourceInfo: `Local PostgreSQL table '${safeTable}'` };
     }
   } catch (localErr) {
     logger.warn(`[HourlyCampaignSync] Error querying local table '${safeTable}': ${localErr.message}`);
   }
 
-  // 3. Check mockStore fallback (for development / testing environments)
+  // 3. Check mockStore fallback (Strict LIFO order)
   if (mockStore.data && Array.isArray(mockStore.data[safeTable])) {
-    const mockRows = mockStore.data[safeTable].slice(0, requestedLimit);
-    return { rows: mockRows, sourceInfo: `MockStore table '${safeTable}'` };
+    const mockRows = [...mockStore.data[safeTable]].reverse().slice(0, requestedLimit);
+    return { rows: mockRows, sourceInfo: `MockStore table '${safeTable}' (LIFO)` };
   }
 
   // Table not found anywhere
@@ -362,6 +390,18 @@ const syncCampaignLeads = async (projectId, options = {}, tenantContext = {}) =>
       const newLeads = [];
       const newSubmissions = [];
 
+      // Query pre-existing project_code assignments for this campaign if available
+      const existingCodeAssignments = new Map();
+      try {
+        const hasAssignmentsTable = await db.schema.hasTable('campaign_project_code_assignments');
+        if (hasAssignmentsTable) {
+          const assignments = await db('campaign_project_code_assignments').where('project_id', projectId);
+          for (const asg of assignments) {
+            existingCodeAssignments.set(String(asg.project_code).trim().toUpperCase(), asg.vendor_id);
+          }
+        }
+      } catch (_) {}
+
       for (const row of fetchedRows) {
         const submissionId = String(
           row.submission_id_dr || row.submission_id || row.interview_id || row.external_id || row.lead_id || row.id || ''
@@ -391,11 +431,15 @@ const syncCampaignLeads = async (projectId, options = {}, tenantContext = {}) =>
         const duration = parseFloat(row.duration || row.call_duration || row.length || 0);
         const interviewerId = row.interviewer_id || row.agent_id || row.interviewer || null;
         const agentId = row.agent_id || row.interviewer_id || null;
+        const rawProjectCode = row.project_code || row.projectCode || row.project || row.code || project.project_code || 'DEFAULT';
+        const projectCode = String(rawProjectCode).trim();
+        const preAssignedVendorId = existingCodeAssignments.get(projectCode.toUpperCase()) || null;
 
         const leadMetadata = {
           ...row,
           submission_id: fallbackSubId,
           external_id: fallbackSubId,
+          project_code: projectCode,
           respondent_name: respondentName,
           phone_number: phone,
           ac_name: constituency,
@@ -414,14 +458,16 @@ const syncCampaignLeads = async (projectId, options = {}, tenantContext = {}) =>
         newLeads.push({
           id: leadId,
           project_id: projectId,
+          project_code: projectCode,
           external_id: fallbackSubId,
-          vendor_id: null,
+          vendor_id: preAssignedVendorId,
           assigned_agent_id: null,
           phone_number: phone || `+91-9${Math.floor(100000000 + Math.random() * 900000000)}`,
           respondent_name: respondentName,
           state: state,
           constituency: constituency,
-          status: 'PENDING',
+          status: preAssignedVendorId ? 'ASSIGNED' : 'PENDING',
+          allocated_at: preAssignedVendorId ? now : null,
           priority: parseInt(row.priority, 10) || 50,
           attempt_count: 0,
           metadata: JSON.stringify(leadMetadata),

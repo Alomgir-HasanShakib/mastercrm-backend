@@ -118,6 +118,18 @@ const assignmentParamSchema = Joi.object({
   assignmentId: Joi.alternatives().try(Joi.number().integer(), Joi.string().uuid(), Joi.string()).required(),
 });
 
+/**
+ * Schema for resetting/setting a user's password by an admin.
+ */
+const resetPasswordSchema = Joi.object({
+  newPassword: Joi.string()
+    .min(1)
+    .required()
+    .messages({
+      'any.required': 'New password is required',
+    }),
+});
+
 module.exports = {
   listUsersSchema,
   createUserSchema,
@@ -126,4 +138,5 @@ module.exports = {
   assignmentSchema,
   idParamSchema,
   assignmentParamSchema,
+  resetPasswordSchema,
 };

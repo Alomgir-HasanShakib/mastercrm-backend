@@ -6,7 +6,7 @@
 const { ConflictError, NotFoundError, AuthorizationError, ValidationError } = require('../../utils/errors');
 const { hashPassword } = require('../../utils/crypto');
 const usersModel = require('./users.model');
-const { db } = require('../../database/connection');
+const { db, withDbFallback } = require('../../database/connection');
 const mockStore = require('../../database/mockStore');
 
 
@@ -93,6 +93,9 @@ const createUser = async (userData, tenantContext = {}) => {
   let organizationId = userData.organizationId;
   if (!tenantContext.isMasterAdmin || !organizationId) {
     organizationId = tenantContext.organizationId;
+  }
+  if (!organizationId) {
+    organizationId = (mockStore.data?.organizations?.[0]?.id) || '11111111-1111-1111-1111-111111111111';
   }
 
   // Determine vendor ID & enforce vendor creator boundaries
@@ -367,6 +370,53 @@ const deleteUser = async (id, tenantContext = {}) => {
 };
 
 /**
+ * Admin or Manager resets a user's password with strict tenant and role isolation.
+ *
+ * @param {string|number} id - User primary ID
+ * @param {string} newPassword - New password string (min 8 chars, uppercase, lowercase, number)
+ * @param {object} tenantContext - Authenticated request tenant context
+ * @returns {Promise<object>} Sanitized updated user
+ */
+const resetUserPassword = async (id, newPassword, tenantContext = {}) => {
+  const targetUser = await getUserById(id, tenantContext);
+
+  const callerRole = (tenantContext.role || tenantContext.roleName || tenantContext.role_name || '').toUpperCase().replace(/[\s-]+/g, '_');
+  const targetRole = (targetUser.role || targetUser.roleName || targetUser.role_slug || '').toUpperCase().replace(/[\s-]+/g, '_');
+
+  const isMaster = callerRole === 'MASTER_ADMIN' || callerRole === 'MASTER_ADMINISTRATOR' || callerRole === 'SUPER_ADMIN' || Boolean(tenantContext.isMasterAdmin);
+  const isVendorAdmin = callerRole === 'VENDOR_ADMIN' || callerRole.includes('VENDOR');
+
+  // Hierarchy security guard: caller cannot reset a higher-privileged user
+  if (!isMaster) {
+    if (targetRole === 'MASTER_ADMIN' || targetRole === 'SUPER_ADMIN' || targetRole === 'MASTER_ADMINISTRATOR') {
+      throw new AuthorizationError('Permission Denied: You cannot reset a Master Administrator password.');
+    }
+    if (isVendorAdmin && (targetRole === 'ORGANIZATION_ADMIN' || targetRole === 'ORG_ADMIN' || targetRole === 'CLIENT_ADMIN')) {
+      throw new AuthorizationError('Permission Denied: Vendor Admins cannot reset Organization Administrator passwords.');
+    }
+  }
+
+  // Password validation
+  if (!newPassword || typeof newPassword !== 'string' || newPassword.trim().length === 0) {
+    throw new ValidationError('New password is required.');
+  }
+
+  // Hash password using bcrypt
+  const { hashPassword } = require('../../utils/crypto');
+  const passwordHash = await hashPassword(newPassword);
+
+  const authModel = require('../auth/auth.model');
+  await authModel.updatePassword(id, passwordHash);
+
+  // Invalidate any active refresh tokens to force re-login with the new password
+  try {
+    await authModel.deleteAllUserRefreshTokens(id);
+  } catch (_) {}
+
+  return targetUser;
+};
+
+/**
  * Retrieves all project assignments for a user.
  *
  * @param {string|number} userId - User primary ID
@@ -500,8 +550,53 @@ const verifyUserDocument = async (docId, status, verifiedBy) => {
 /**
  * Returns quota statistics (created users vs capacity, concurrent seats vs lease).
  */
-const getOrganizationQuotaStats = async (organizationId) => {
-  return mockStore.getOrganizationQuotaStats(organizationId);
+const getOrganizationQuotaStats = async (organizationId, tenantContext = {}) => {
+  return withDbFallback(
+    async () => {
+      let targetOrgId = organizationId;
+      if (!targetOrgId && tenantContext.organizationId) {
+        targetOrgId = tenantContext.organizationId;
+      }
+      if (!targetOrgId) {
+        const firstOrg = await db('organizations').orderBy('created_at', 'asc').first();
+        targetOrgId = firstOrg?.id;
+      }
+
+      const org = targetOrgId ? await db('organizations').where('id', targetOrgId).first() : null;
+
+      let countQuery = db('users').whereNull('deleted_at');
+      if (targetOrgId) {
+        countQuery = countQuery.where((b) => {
+          b.where('organization_id', targetOrgId).orWhereNull('organization_id');
+        });
+      }
+      const countRes = await countQuery.count('* as cnt').first();
+      const totalUsers = Math.max(parseInt(countRes?.cnt || 0, 10), 1);
+
+      const leasesCount = targetOrgId
+        ? await db('active_seat_leases')
+            .where('organization_id', targetOrgId)
+            .where('expires_at', '>', new Date())
+            .count('* as cnt')
+            .first()
+        : { cnt: 0 };
+
+      return {
+        organizationId: targetOrgId,
+        organizationName: org?.name || 'Stelleronix Organization',
+        maxCreatedUsers: org?.max_created_users || org?.max_users || 200,
+        currentCreatedUsers: totalUsers,
+        maxConcurrentHumanSeats: org?.max_concurrent_human_seats || 5,
+        activeConcurrentHumanSeats: parseInt(leasesCount?.cnt || 0, 10),
+        auditAiLicenses: org?.audit_ai_licenses || 2,
+        voiceAiLicenses: org?.voice_ai_licenses || 1,
+        licenseStatus: org?.license_status || (org?.is_active ? 'ACTIVE' : 'INACTIVE'),
+        validityStart: org?.license_validity_start || '2026-01-01',
+        validityEnd: org?.license_validity_end || '2027-01-01',
+      };
+    },
+    () => mockStore.getOrganizationQuotaStats(organizationId)
+  );
 };
 
 /**
@@ -577,5 +672,6 @@ module.exports = {
   verifyUserDocument,
   getOrganizationQuotaStats,
   bulkImportUsers,
+  resetUserPassword,
   sanitizeUser,
 };

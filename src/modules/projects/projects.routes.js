@@ -15,6 +15,7 @@ const {
   bindQuestionnaireSchema,
   createCampaignQuestionnaireSchema,
   surveyLeadSchema,
+  assignProjectCodeSchema,
 } = require('./projects.validation');
 
 const router = express.Router();
@@ -84,6 +85,49 @@ router.post(
 // MULTI-VENDOR ALLOCATION & STRICT DATA ISOLATION
 // ==========================================
 
+// ==========================================
+// LEAD DISTRIBUTION BY PROJECT CODE & VENDOR ASSIGNMENT
+// ==========================================
+
+// ==========================================
+// DYNAMIC CONSTITUENCIES & CONCURRENT LEAD LOCKING
+// ==========================================
+router.get(
+  '/:id/constituencies',
+  projectsController.getCampaignConstituencies
+);
+
+router.post(
+  '/:id/lock-next-lead',
+  projectsController.lockNextLead
+);
+
+// Get breakdown of unique project_codes with lead counts and vendor assignments
+router.get(
+  '/:id/project-code-distribution',
+  projectsController.getProjectCodeDistribution
+);
+
+router.get(
+  '/:id/project-codes',
+  projectsController.getProjectCodeDistribution
+);
+
+// Organization Admin assigns or redistributes a project_code to a designated Vendor
+router.post(
+  '/:id/assign-project-code',
+  checkRole('MASTER_ADMIN', 'ORGANIZATION_ADMIN', 'ORG_ADMIN', 'CLIENT_ADMIN', 'PROJECT_MANAGER'),
+  validate(assignProjectCodeSchema, 'body'),
+  projectsController.assignProjectCode
+);
+
+router.post(
+  '/:id/redistribute-project-code',
+  checkRole('MASTER_ADMIN', 'ORGANIZATION_ADMIN', 'ORG_ADMIN', 'CLIENT_ADMIN', 'PROJECT_MANAGER'),
+  validate(assignProjectCodeSchema, 'body'),
+  projectsController.assignProjectCode
+);
+
 // Equal split lead allocation (e.g. 65 leads across 5 vendors -> 13 each)
 router.post(
   '/:id/leads/allocate',
@@ -126,6 +170,26 @@ router.post(
 router.get(
   '/:id/leads',
   projectsController.getCampaignLeads
+);
+
+// Get assigned vendors for a campaign
+router.get(
+  '/:id/vendors',
+  projectsController.getProjectVendors
+);
+
+// Preview uncompleted leads for a historical date before rechaining
+router.get(
+  '/:id/rechain-preview',
+  checkRole('MASTER_ADMIN', 'CLIENT_ADMIN', 'PROJECT_MANAGER', 'ORG_ADMIN'),
+  projectsController.previewRechain
+);
+
+// Rechain uncompleted leads from a historical date into today's active survey queue
+router.post(
+  '/:id/rechain',
+  checkRole('MASTER_ADMIN', 'CLIENT_ADMIN', 'PROJECT_MANAGER', 'ORG_ADMIN'),
+  projectsController.rechainLeads
 );
 
 // Lead allocation summary metrics

@@ -84,9 +84,12 @@ const generateInitialCampaignLeads = (count = 65, projectId = PROJECT_1_ID) => {
     const fn = INDIAN_FIRST_NAMES[(i - 1) % INDIAN_FIRST_NAMES.length];
     const ln = INDIAN_LAST_NAMES[(i - 1) % INDIAN_LAST_NAMES.length];
     const state = SAMPLE_STATES[(i - 1) % SAMPLE_STATES.length];
+    // Realistic project_code breakdown: PRJ-ABC (20 leads), PRJ-XYZ (25 leads), PRJ-POL (20 leads)
+    const projectCode = i <= 20 ? 'PRJ-ABC' : (i <= 45 ? 'PRJ-XYZ' : 'PRJ-POL');
     leads.push({
       id: `lead-c1-${String(i).padStart(4, '0')}`,
       project_id: projectId,
+      project_code: projectCode,
       vendor_id: null, // Initially unassigned pending pool
       assigned_agent_id: null,
       respondent_name: `${fn} ${ln}`,
@@ -96,7 +99,7 @@ const generateInitialCampaignLeads = (count = 65, projectId = PROJECT_1_ID) => {
       status: 'PENDING',
       priority: 50 + (i % 30),
       attempt_count: 0,
-      metadata: JSON.stringify({ source: 'Election_Roll_Import_2026', sampleWave: 1 }),
+      metadata: JSON.stringify({ source: 'Election_Roll_Import_2026', sampleWave: 1, project_code: projectCode }),
       allocated_at: null,
       surveyed_at: null,
       created_at: new Date('2026-02-15T10:00:00Z'),
@@ -123,9 +126,9 @@ const store = {
       max_created_users: 200,
       max_concurrent_human_seats: 5,
       audit_ai_licenses: 2,
-      voice_ai_licenses: 1,
+      voice_ai_licenses: 2,
       enable_ai_audit: true,
-      enabled_modules: ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'],
+      enabled_modules: ['CAPI', 'CATI', 'TVC', 'FA', 'AUDIT', 'AI_AUDIT', 'SUPER_AUDIT'],
       license_status: 'ACTIVE',
       license_validity_start: '2026-01-01',
       license_validity_end: '2027-01-01',
@@ -233,7 +236,7 @@ const store = {
     { id: ROLE_CATI_AGENT_ID, name: 'CATI Agent', slug: 'CATI_AGENT', display_name: 'CATI Agent', is_system: true, permissions: JSON.stringify(['submissions:create', 'submissions:read', 'submissions:update']) },
     { id: ROLE_CAPI_AUDITOR_ID, name: 'CAPI Auditor', slug: 'CAPI_AUDITOR', display_name: 'CAPI Auditor', is_system: true, permissions: JSON.stringify(['capi_audit:perform', 'capi_audit:read', 'submissions:read']) },
     { id: ROLE_SUPER_AUDITOR_ID, name: 'Super Auditor', slug: 'SUPER_AUDITOR', display_name: 'Super Auditor', is_system: true, permissions: JSON.stringify(['super_audit:perform', 'super_audit:read', 'capi_audit:read', 'submissions:read']) },
-    { id: ROLE_TVC_AGENT_ID, name: 'TVC Agent', slug: 'TVC_AGENT', display_name: 'TVC Agent', is_system: true, permissions: JSON.stringify(['tvc:dial', 'tvc:read', 'submissions:read']) },
+    { id: ROLE_TVC_AGENT_ID, name: 'TVC Agent', slug: 'TVC_AGENT', display_name: 'TVC Agent', is_system: true, permissions: JSON.stringify(['tvc:*', 'dialer:*', 'submissions:*', 'projects:read', 'questionnaires:read', 'operations:*', 'realtime:*']) },
     { id: ROLE_FA_AGENT_ID, name: 'Feedback Agent (FA)', slug: 'FA_AGENT', display_name: 'Feedback Agent', is_system: true, permissions: JSON.stringify(['fa:dial', 'fa:read', 'submissions:read']) },
     { id: ROLE_EXAM_AGENT_ID, name: 'Examination Agent', slug: 'EXAM_AGENT', display_name: 'Exam Candidate', is_system: true, permissions: JSON.stringify(['exam:read', 'exam:submit']) },
     { id: ROLE_VIEWER_ID, name: 'Viewer', slug: 'VIEWER', display_name: 'Viewer', is_system: true, permissions: JSON.stringify(['reports:read', 'submissions:read']) },
@@ -1310,6 +1313,9 @@ const store = {
     },
   ],
 
+  // 9d. Campaign Project Code Assignments (Mapping project_code to vendors for lead distribution)
+  campaign_project_code_assignments: [],
+
   // 10. Dialer CDRs
   dialer_cdr: [
     {
@@ -2274,6 +2280,7 @@ const store = {
       total_price: 698.00,
       currency: 'USD',
       has_ai_audit: true,
+      ai_license: 2,
       billing_cycle: 'ANNUAL',
       start_date: new Date('2026-01-01T00:00:00Z'),
       end_date: new Date('2027-01-01T00:00:00Z'),
@@ -2312,9 +2319,9 @@ const store = {
   subscription_pricing: [
     {
       id: 'default',
-      base_price: 499.00,
-      ai_audit_price: 199.00,
-      currency: 'USD',
+      base_price: 10.00,
+      ai_audit_price: 50.00,
+      currency: 'BDT',
       updated_at: new Date(),
     },
   ],
@@ -2359,9 +2366,9 @@ const store = {
       max_created_users: 200,
       max_concurrent_human_seats: 5,
       audit_ai_licenses: 2,
-      voice_ai_licenses: 1,
+      voice_ai_licenses: 2,
       enable_ai_audit: true,
-      enabled_modules: ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'],
+      enabled_modules: ['CAPI', 'CATI', 'TVC', 'FA', 'AUDIT', 'AI_AUDIT', 'SUPER_AUDIT'],
       license_status: 'ACTIVE',
       validity_start: '2026-01-01',
       validity_end: '2027-01-01',
@@ -2441,6 +2448,9 @@ const store = {
 
   // 23. Operational Agent Breaks & Productivity
   agent_breaks: [],
+
+  // 24. System Error Logs Telemetry
+  error_logs: [],
 };
 
 // ============================================================================
@@ -3296,15 +3306,29 @@ const mockStore = {
 
   getOrganizationQuotaStats(organizationId) {
     this.cleanExpiredLeases();
-    const org = store.organizations.find((o) => o.id === organizationId) || store.organizations[0];
-    const totalUsers = store.users.filter((u) => u.organization_id === organizationId && !u.deleted_at).length;
+    let org = null;
+    if (organizationId) {
+      org = store.organizations.find((o) => o.id === organizationId || o.code === organizationId);
+    }
+    if (!org && store.organizations.length > 0) {
+      org = store.organizations[0];
+    }
+    const targetOrgId = org ? org.id : (organizationId || ORG_ID);
+
+    const activeUsers = store.users.filter((u) => !u.deleted_at);
+    // Find all users belonging to this organization or in default pool
+    let orgUsers = activeUsers.filter(
+      (u) => !targetOrgId || u.organization_id === targetOrgId || !u.organization_id || targetOrgId === ORG_ID
+    );
+    const totalUsers = Math.max(orgUsers.length, 1);
+
     const leases = store.active_seat_leases.filter(
-      (l) => l.organization_id === organizationId && new Date(l.expires_at) > new Date()
+      (l) => (!targetOrgId || l.organization_id === targetOrgId) && new Date(l.expires_at) > new Date()
     );
     return {
-      organizationId,
+      organizationId: targetOrgId,
       organizationName: org?.name || 'Stelleronix Organization',
-      maxCreatedUsers: org?.max_created_users || 200,
+      maxCreatedUsers: org?.max_created_users || org?.max_users || 200,
       currentCreatedUsers: totalUsers,
       maxConcurrentHumanSeats: org?.max_concurrent_human_seats || 5,
       activeConcurrentHumanSeats: leases.length,
@@ -3346,6 +3370,9 @@ const mockStore = {
       const unassigned = candidateLeads.filter((l) => !l.vendor_id);
       candidateLeads = unassigned.length > 0 ? unassigned : candidateLeads;
     }
+
+    // Strict LIFO distribution: sort newest leads first
+    candidateLeads.sort((a, b) => new Date(b.created_at || b.updated_at || 0) - new Date(a.created_at || a.updated_at || 0));
 
     const totalLeads = candidateLeads.length;
 
@@ -3441,6 +3468,9 @@ const mockStore = {
       const unassigned = candidateLeads.filter((l) => !l.vendor_id);
       candidateLeads = unassigned.length > 0 ? unassigned : candidateLeads;
     }
+
+    // Strict LIFO distribution: sort newest leads first
+    candidateLeads.sort((a, b) => new Date(b.created_at || b.updated_at || 0) - new Date(a.created_at || a.updated_at || 0));
 
     const totalLeads = candidateLeads.length;
     const vendorCount = targetVendors.length;
@@ -3570,20 +3600,113 @@ const mockStore = {
   },
 
   /**
+   * Preview uncompleted leads for a campaign on a specific date in mockStore.
+   */
+  previewRechain(projectId, options = {}) {
+    const { date, vendorId } = options;
+    const leads = store.campaign_leads.filter((l) => {
+      if (l.project_id !== projectId) return false;
+      if (l.status === 'COMPLETED' || l.surveyed_at) return false;
+      if (vendorId && l.vendor_id !== vendorId) return false;
+      const leadDate = new Date(l.created_at || l.allocated_at || Date.now()).toISOString().split('T')[0];
+      return leadDate === date;
+    });
+
+    return {
+      projectId,
+      date,
+      vendorId: vendorId || null,
+      uncompletedCount: leads.length,
+      samples: leads.slice(0, 5).map((s) => ({
+        id: s.id,
+        respondent_name: s.respondent_name,
+        phone_number: s.phone_number,
+        constituency: s.constituency,
+        created_at: s.created_at,
+        status: s.status,
+      })),
+    };
+  },
+
+  /**
+   * Rechain uncompleted leads from a specific historical date into today's active survey pool.
+   * LIFO order: stamps with current time and clears locks.
+   */
+  rechainCampaignLeads(projectId, options = {}) {
+    const { date, vendorId } = options;
+    const targetLeads = store.campaign_leads.filter((l) => {
+      if (l.project_id !== projectId) return false;
+      if (l.status === 'COMPLETED' || l.surveyed_at) return false;
+      if (vendorId && l.vendor_id !== vendorId) return false;
+      const leadDate = new Date(l.created_at || l.allocated_at || Date.now()).toISOString().split('T')[0];
+      return leadDate === date;
+    });
+
+    const now = new Date();
+    targetLeads.forEach((lead) => {
+      lead.status = 'PENDING';
+      lead.locked_by_auditor = null;
+      lead.locked_at = null;
+      lead.assigned_agent_id = null;
+      lead.allocated_at = now;
+      lead.created_at = now; // Re-stamp to now for LIFO queue priority
+      lead.updated_at = now;
+      const meta = typeof lead.metadata === 'string' ? JSON.parse(lead.metadata || '{}') : (lead.metadata || {});
+      meta.is_rechained = true;
+      meta.rechained_from_date = date;
+      meta.rechained_at = now.toISOString();
+      lead.metadata = meta;
+    });
+
+    return {
+      projectId,
+      date,
+      rechainedCount: targetLeads.length,
+      message: `Successfully rechained ${targetLeads.length} uncompleted lead(s) from ${date} into today's active survey queue!`,
+    };
+  },
+
+  /**
    * Get campaign leads enforcing strict multi-vendor isolation.
    * Vendor A can NEVER see or access leads belonging to Vendor B.
    */
   getCampaignLeadsIsolated(projectId, filters = {}, userContext = {}) {
     let leads = store.campaign_leads.filter((l) => l.project_id === projectId);
 
-    if (userContext && userContext.vendorId) {
-      leads = leads.filter((l) => l.vendor_id === userContext.vendorId);
+    const isVendorUser = Boolean(userContext && (userContext.vendorId || (userContext.role && String(userContext.role).toUpperCase().includes('VENDOR'))));
+
+    if (isVendorUser && userContext.vendorId) {
+      // Vendor Admin or Vendor Agent: can ONLY access leads where project_code matches their assigned project codes!
+      const assignments = (store.campaign_project_code_assignments || []).filter(
+        (a) => a.project_id === projectId && a.vendor_id === userContext.vendorId
+      );
+      const assignedCodes = assignments.map((a) => a.project_code);
+
+      if (assignedCodes.length > 0) {
+        leads = leads.filter((l) => l.vendor_id === userContext.vendorId && assignedCodes.includes(l.project_code));
+      } else {
+        // If no explicit project_code assignment yet, fallback to leads allocated to vendor_id
+        leads = leads.filter((l) => l.vendor_id === userContext.vendorId);
+      }
     } else if (filters.vendorId) {
       leads = leads.filter((l) => l.vendor_id === filters.vendorId);
     }
 
+    if (filters.project_code) {
+      leads = leads.filter((l) => l.project_code === filters.project_code);
+    }
+
     if (filters.status) {
       leads = leads.filter((l) => l.status === filters.status);
+    }
+    if (filters.ac) {
+      const acTarget = String(filters.ac).toLowerCase().trim();
+      leads = leads.filter(
+        (l) =>
+          (l.constituency && l.constituency.toLowerCase().trim() === acTarget) ||
+          (l.ac_name && l.ac_name.toLowerCase().trim() === acTarget) ||
+          (l.acName && l.acName.toLowerCase().trim() === acTarget)
+      );
     }
     if (filters.search) {
       const s = filters.search.toLowerCase();
@@ -3643,8 +3766,28 @@ const mockStore = {
     const lead = store.campaign_leads.find((l) => l.id === leadId);
     if (!lead) throw new NotFoundError(`Lead '${leadId}' not found`);
 
-    if (userContext && userContext.vendorId && lead.vendor_id && String(lead.vendor_id) !== String(userContext.vendorId)) {
-      throw new AuthorizationError('Multi-Vendor Isolation: You are forbidden from accessing or surveying leads allocated to another vendor agency.');
+    const isVendorUser = Boolean(userContext && (userContext.vendorId || (userContext.role && String(userContext.role).toUpperCase().includes('VENDOR'))));
+
+    if (isVendorUser && userContext.vendorId) {
+      if (lead.vendor_id && String(lead.vendor_id) !== String(userContext.vendorId)) {
+        throw new AuthorizationError('Multi-Vendor Isolation: You are forbidden from accessing or surveying leads allocated to another vendor agency.');
+      }
+
+      // Check project_code scoping
+      const assignments = (store.campaign_project_code_assignments || []).filter(
+        (a) => a.project_id === lead.project_id
+      );
+      if (assignments.length > 0 && lead.project_code) {
+        const assignedToThisVendor = assignments.some(
+          (a) => a.project_code === lead.project_code && a.vendor_id === userContext.vendorId
+        );
+        const assignedToOtherVendor = assignments.some(
+          (a) => a.project_code === lead.project_code && a.vendor_id !== userContext.vendorId
+        );
+        if (assignedToOtherVendor || (!assignedToThisVendor && assignments.length > 0)) {
+          throw new AuthorizationError('Multi-Vendor Isolation: You are forbidden from accessing or surveying leads outside of your assigned project code.');
+        }
+      }
     }
 
     // Idempotent guard: if lead is already completed, return without repeating operations
@@ -3667,6 +3810,290 @@ const mockStore = {
     });
 
     return lead;
+  },
+
+  /**
+   * Get unique project_code distribution with lead counts and vendor assignments.
+   */
+  getProjectCodeDistribution(projectId, userContext = {}) {
+    const campaignLeads = (store.campaign_leads || []).filter((l) => l.project_id === projectId);
+    const totalLeads = campaignLeads.length;
+
+    // Group leads by project_code
+    const grouped = {};
+    for (const lead of campaignLeads) {
+      const code = lead.project_code || 'UNASSIGNED_CODE';
+      if (!grouped[code]) {
+        grouped[code] = {
+          project_code: code,
+          lead_count: 0,
+          pending_count: 0,
+          assigned_count: 0,
+          completed_count: 0,
+          vendor_id: null,
+        };
+      }
+      grouped[code].lead_count++;
+      if (lead.status === 'COMPLETED') grouped[code].completed_count++;
+      else if (lead.vendor_id) grouped[code].assigned_count++;
+      else grouped[code].pending_count++;
+
+      if (lead.vendor_id && !grouped[code].vendor_id) {
+        grouped[code].vendor_id = lead.vendor_id;
+      }
+    }
+
+    // Overlay assignments from campaign_project_code_assignments
+    const assignments = (store.campaign_project_code_assignments || []).filter(
+      (a) => a.project_id === projectId
+    );
+    for (const asg of assignments) {
+      if (grouped[asg.project_code]) {
+        grouped[asg.project_code].vendor_id = asg.vendor_id;
+        grouped[asg.project_code].assigned_at = asg.assigned_at;
+      } else {
+        grouped[asg.project_code] = {
+          project_code: asg.project_code,
+          lead_count: 0,
+          pending_count: 0,
+          assigned_count: 0,
+          completed_count: 0,
+          vendor_id: asg.vendor_id,
+          assigned_at: asg.assigned_at,
+        };
+      }
+    }
+
+    let distribution = Object.values(grouped).map((item) => {
+      const vendor = item.vendor_id ? store.vendors.find((v) => v.id === item.vendor_id) : null;
+      return {
+        project_code: item.project_code,
+        lead_count: item.lead_count,
+        percentage: totalLeads > 0 ? parseFloat(((item.lead_count / totalLeads) * 100).toFixed(1)) : 0,
+        vendor_id: item.vendor_id || null,
+        vendor_name: vendor ? vendor.name : null,
+        vendor_code: vendor ? vendor.code : null,
+        assigned_at: item.assigned_at || null,
+        status_breakdown: {
+          pending: item.pending_count,
+          assigned: item.assigned_count,
+          completed: item.completed_count,
+        },
+      };
+    });
+
+    // Sort by project_code
+    distribution.sort((a, b) => a.project_code.localeCompare(b.project_code));
+
+    // Scoping: Vendor Admin/Agent only sees their assigned project codes!
+    const isVendorUser = Boolean(userContext && (userContext.vendorId || (userContext.role && String(userContext.role).toUpperCase().includes('VENDOR'))));
+    if (isVendorUser && userContext.vendorId) {
+      distribution = distribution.filter((d) => d.vendor_id === userContext.vendorId);
+    }
+
+    return {
+      projectId,
+      totalLeads,
+      uniqueProjectCodesCount: distribution.length,
+      distribution,
+    };
+  },
+
+  /**
+   * Assign or redistribute a project_code to a designated vendor.
+   * Seamlessly reallocates all leads with this project_code to the new vendor.
+   */
+  assignProjectCode(projectId, projectCode, vendorId, userContext = {}) {
+    if (!projectCode) throw new ValidationError('Project code is required.');
+    if (!vendorId) throw new ValidationError('Vendor ID is required.');
+
+    const vendor = store.vendors.find((v) => v.id === vendorId);
+    if (!vendor) throw new NotFoundError(`Vendor '${vendorId}' not found.`);
+
+    if (!store.campaign_project_code_assignments) {
+      store.campaign_project_code_assignments = [];
+    }
+
+    // Check existing assignment for this project code
+    let assignment = store.campaign_project_code_assignments.find(
+      (a) => a.project_id === projectId && a.project_code === projectCode
+    );
+
+    const prevVendorId = assignment ? assignment.vendor_id : null;
+    const prevVendor = prevVendorId ? store.vendors.find((v) => v.id === prevVendorId) : null;
+
+    if (assignment) {
+      assignment.vendor_id = vendorId;
+      assignment.assigned_at = new Date();
+      assignment.updated_at = new Date();
+    } else {
+      assignment = {
+        id: uuidv4(),
+        project_id: projectId,
+        project_code: projectCode,
+        vendor_id: vendorId,
+        assigned_at: new Date(),
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+      store.campaign_project_code_assignments.push(assignment);
+    }
+
+    // Ensure vendor is contracted in project_vendor_assignments
+    const existingPva = store.project_vendor_assignments.find(
+      (a) => a.project_id === projectId && a.vendor_id === vendorId
+    );
+    if (!existingPva) {
+      store.project_vendor_assignments.push({
+        id: uuidv4(),
+        project_id: projectId,
+        vendor_id: vendorId,
+        is_active: true,
+        created_at: new Date(),
+      });
+    } else {
+      existingPva.is_active = true;
+    }
+
+    // Reallocate / update matching leads
+    let reallocatedCount = 0;
+    (store.campaign_leads || []).forEach((lead) => {
+      if (lead.project_id === projectId && lead.project_code === projectCode) {
+        lead.vendor_id = vendorId;
+        if (lead.status !== 'COMPLETED') {
+          lead.status = 'ASSIGNED';
+        }
+        lead.allocated_at = new Date();
+        lead.updated_at = new Date();
+        reallocatedCount++;
+      }
+    });
+
+    const isRedistribution = Boolean(prevVendorId && prevVendorId !== vendorId);
+
+    return {
+      projectId,
+      projectCode,
+      vendorId,
+      vendorName: vendor.name,
+      vendorCode: vendor.code,
+      previousVendorId: prevVendorId,
+      previousVendorName: prevVendor?.name || null,
+      isRedistribution,
+      reallocatedCount,
+      message: isRedistribution
+        ? `Successfully redistributed project code '${projectCode}' (${reallocatedCount} leads) from '${prevVendor?.name || 'Previous Vendor'}' to '${vendor.name}'.`
+        : `Successfully assigned project code '${projectCode}' (${reallocatedCount} leads) to vendor '${vendor.name}'.`,
+    };
+  },
+
+  /**
+   * Get dynamic list of Assembly Constituencies (ACs) scoped strictly to current user's role and assigned project codes.
+   * Org Admin sees all ACs in the campaign.
+   * Vendor / Agent sees only ACs for their assigned project codes.
+   * Also returns available unassigned lead counts and whether another agent is actively claiming the AC.
+   */
+  getCampaignConstituencies(projectId, userContext = {}) {
+    const { leads } = this.getCampaignLeadsIsolated(projectId, {}, userContext);
+    const acMap = {};
+    const currentUserId = userContext.userId || userContext.id;
+
+    for (const lead of leads) {
+      const acName = lead.constituency || lead.ac_name || 'General AC';
+      if (!acMap[acName]) {
+        acMap[acName] = {
+          ac_name: acName,
+          total_leads: 0,
+          completed_leads: 0,
+          in_progress_leads: 0,
+          available_leads: 0,
+          is_claimed_by_me: false,
+          active_agents: new Set(),
+        };
+      }
+      const ac = acMap[acName];
+      ac.total_leads++;
+
+      if (lead.status === 'COMPLETED') {
+        ac.completed_leads++;
+      } else if (lead.status === 'IN_PROGRESS') {
+        ac.in_progress_leads++;
+        if (lead.assigned_agent_id) {
+          ac.active_agents.add(lead.assigned_agent_id);
+          if (lead.assigned_agent_id === currentUserId) {
+            ac.is_claimed_by_me = true;
+          }
+        }
+      } else {
+        // PENDING or ASSIGNED (not yet started)
+        if (!lead.assigned_agent_id) {
+          ac.available_leads++;
+        } else if (lead.assigned_agent_id === currentUserId) {
+          ac.is_claimed_by_me = true;
+          ac.available_leads++;
+        } else {
+          ac.in_progress_leads++;
+          ac.active_agents.add(lead.assigned_agent_id);
+        }
+      }
+    }
+
+    const result = Object.values(acMap).map((ac) => {
+      const isOtherAgentWorking = ac.active_agents.size > 0 && (!currentUserId || !ac.active_agents.has(currentUserId));
+      const isClaimedByOther = ac.available_leads === 0 && (ac.in_progress_leads > 0 || isOtherAgentWorking);
+      return {
+        ac_name: ac.ac_name,
+        total_leads: ac.total_leads,
+        completed_leads: ac.completed_leads,
+        in_progress_leads: ac.in_progress_leads,
+        available_leads: ac.available_leads,
+        is_claimed_by_other_agent: isClaimedByOther,
+        is_claimed_by_me: ac.is_claimed_by_me,
+        active_agents_count: ac.active_agents.size,
+      };
+    }).sort((a, b) => a.ac_name.localeCompare(b.ac_name));
+
+    return result;
+  },
+
+  /**
+   * Atomically reserve / lock the next lead for an agent in a specific campaign & AC.
+   * Guarantees 1 lead to exactly 1 agent. Multiple agents under the same vendor will NEVER get the same lead.
+   */
+  lockNextCampaignLead(projectId, options = {}, userContext = {}) {
+    const { ac = null, channel = 'CATI' } = options;
+    const currentUserId = userContext.userId || userContext.id || 'agent-' + Date.now();
+    const { leads } = this.getCampaignLeadsIsolated(projectId, {}, userContext);
+
+    // 1. If agent already has an in-progress lead for this AC, return it
+    const existingLead = leads.find((l) =>
+      l.assigned_agent_id === currentUserId &&
+      l.status === 'IN_PROGRESS' &&
+      (!ac || ac === 'ALL' || (l.constituency || l.ac_name) === ac)
+    );
+    if (existingLead) {
+      return existingLead;
+    }
+
+    // 2. Otherwise find the first available unassigned lead matching the AC
+    const candidate = leads.find((l) =>
+      l.status !== 'COMPLETED' &&
+      (l.status === 'PENDING' || l.status === 'ASSIGNED') &&
+      (!l.assigned_agent_id || l.assigned_agent_id === currentUserId) &&
+      (!ac || ac === 'ALL' || (l.constituency || l.ac_name) === ac)
+    );
+
+    if (!candidate) {
+      return null;
+    }
+
+    // 3. Atomically lock candidate to current agent
+    candidate.assigned_agent_id = currentUserId;
+    candidate.status = 'IN_PROGRESS';
+    candidate.locked_at = new Date();
+    candidate.updated_at = new Date();
+
+    return candidate;
   },
 
   // ==========================================================================

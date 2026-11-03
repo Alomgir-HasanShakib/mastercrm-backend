@@ -1387,9 +1387,12 @@ const pullCampaignData = async (params = {}, tenantContext = {}) => {
 
           if (!existingPhones.has(phone)) {
             existingPhones.add(phone);
+            const rawProjectCode = row.project_code || row.projectCode || row.project || row.code || project?.project_code || 'DEFAULT';
+            const projectCode = String(rawProjectCode).trim();
             leadsToInsert.push({
               id: uuidv4(),
               project_id: pId,
+              project_code: projectCode,
               phone_number: phone,
               respondent_name: respondentName,
               state: row.state || 'Maharashtra',
@@ -1399,6 +1402,7 @@ const pullCampaignData = async (params = {}, tenantContext = {}) => {
               attempt_count: 0,
               metadata: JSON.stringify({
                 ...row,
+                project_code: projectCode,
                 source_table: targetTable,
                 submission_id: submissionId,
                 pulled_at: now,

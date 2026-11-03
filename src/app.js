@@ -121,6 +121,9 @@ app.get('/health', async (req, res, next) => {
   }
 });
 
+// Master Admin System Error Logs Direct Route
+app.use('/api/v1/system/error-logs', require('./modules/system/errorLogs.routes'));
+
 // Mount modular API routes under /api/v1, /api, and / for full URL compatibility
 app.use(config.app.apiPrefix, apiRoutes); // /api/v1/*
 app.use('/api', apiRoutes);               // /api/*

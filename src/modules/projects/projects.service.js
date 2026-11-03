@@ -188,7 +188,8 @@ class ProjectsService {
           if (!options.reallocateAll) {
             leadQuery = leadQuery.whereNull('vendor_id');
           }
-          const candidateLeads = await leadQuery.orderBy('created_at', 'asc').orderBy('id', 'asc');
+          // Strict LIFO lead distribution: newest leads distributed first
+          const candidateLeads = await leadQuery.orderBy('created_at', 'desc').orderBy('id', 'desc');
           const totalLeads = candidateLeads.length;
           const leadIds = candidateLeads.map((l) => l.id);
 
@@ -343,7 +344,8 @@ class ProjectsService {
           if (!options.reallocateAll) {
             leadQuery = leadQuery.whereNull('vendor_id');
           }
-          const candidateLeads = await leadQuery.orderBy('created_at', 'asc').orderBy('id', 'asc');
+          // Strict LIFO lead distribution: newest leads distributed first
+          const candidateLeads = await leadQuery.orderBy('created_at', 'desc').orderBy('id', 'desc');
           const totalLeads = candidateLeads.length;
           const vendorCount = vendorIds.length;
           const perVendorCount = Math.floor(totalLeads / vendorCount);
@@ -637,8 +639,345 @@ class ProjectsService {
   }
 
   /**
-   * Get campaign leads with STRICT multi-vendor data isolation.
-   * Vendor A can NEVER see or access leads belonging to Vendor B!
+   * Get unique project_code distribution with lead counts and vendor assignments for a campaign.
+   * Total leads, unique project_codes, count per code, and assigned vendor.
+   *
+   * @param {string} projectId
+   * @param {object} tenantContext
+   */
+  async getProjectCodeDistribution(projectId, tenantContext = {}) {
+    await tenancyService.getProjectById(projectId, tenantContext);
+
+    if (!(await isDbProject(projectId))) {
+      return mockStore.getProjectCodeDistribution(projectId, tenantContext);
+    }
+
+    return withDbFallback(
+      async () => {
+        const isVendorUser = Boolean(
+          tenantContext.vendorId ||
+          (tenantContext.role && String(tenantContext.role).toUpperCase().includes('VENDOR'))
+        );
+
+        let query = db('campaign_leads as cl')
+          .leftJoin('campaign_project_code_assignments as pca', function () {
+            this.on('pca.project_id', '=', 'cl.project_id')
+              .andOn('pca.project_code', '=', 'cl.project_code');
+          })
+          .leftJoin('vendors as v', function () {
+            this.on('v.id', '=', db.raw('COALESCE(pca.vendor_id, cl.vendor_id)'));
+          })
+          .where('cl.project_id', projectId)
+          .select(
+            db.raw("COALESCE(cl.project_code, 'UNASSIGNED_CODE') as project_code"),
+            db.raw('COUNT(cl.id)::int as lead_count'),
+            db.raw('COALESCE(pca.vendor_id, cl.vendor_id) as vendor_id'),
+            'v.name as vendor_name',
+            'v.code as vendor_code',
+            'pca.assigned_at',
+            db.raw("COUNT(CASE WHEN cl.status = 'COMPLETED' THEN 1 END)::int as completed_count"),
+            db.raw("COUNT(CASE WHEN cl.status = 'PENDING' THEN 1 END)::int as pending_count"),
+            db.raw("COUNT(CASE WHEN cl.status = 'ASSIGNED' THEN 1 END)::int as assigned_count")
+          )
+          .groupByRaw("COALESCE(cl.project_code, 'UNASSIGNED_CODE'), COALESCE(pca.vendor_id, cl.vendor_id), v.name, v.code, pca.assigned_at");
+
+        if (isVendorUser && tenantContext.vendorId) {
+          query = query.where(function () {
+            this.where('pca.vendor_id', tenantContext.vendorId)
+              .orWhere('cl.vendor_id', tenantContext.vendorId);
+          });
+        }
+
+        const rows = await query.orderBy('project_code', 'asc');
+        const totalRow = await db('campaign_leads').where('project_id', projectId).count('id as count').first();
+        const totalLeads = parseInt(totalRow?.count || 0, 10);
+
+        const distribution = rows.map((r) => ({
+          project_code: r.project_code,
+          lead_count: parseInt(r.lead_count || 0, 10),
+          percentage: totalLeads > 0 ? parseFloat(((r.lead_count / totalLeads) * 100).toFixed(1)) : 0,
+          vendor_id: r.vendor_id || null,
+          vendor_name: r.vendor_name || null,
+          vendor_code: r.vendor_code || null,
+          assigned_at: r.assigned_at || null,
+          status_breakdown: {
+            pending: parseInt(r.pending_count || 0, 10),
+            assigned: parseInt(r.assigned_count || 0, 10),
+            completed: parseInt(r.completed_count || 0, 10),
+          },
+        }));
+
+        return {
+          projectId,
+          totalLeads,
+          uniqueProjectCodesCount: distribution.length,
+          distribution,
+        };
+      },
+      () => mockStore.getProjectCodeDistribution(projectId, tenantContext)
+    );
+  }
+
+  /**
+   * Assign or redistribute a project_code to a designated vendor.
+   * If already assigned to Vendor A, Organization Admin can reassign/redistribute to Vendor B seamlessly.
+   *
+   * @param {string} projectId
+   * @param {string} projectCode
+   * @param {string} vendorId
+   * @param {object} options
+   * @param {object} tenantContext
+   */
+  async assignProjectCode(projectId, projectCode, vendorId, options = {}, tenantContext = {}) {
+    const role = (tenantContext.role || tenantContext.roleName || tenantContext.role_name || '').toUpperCase().replace(/\s+/g, '_');
+    if (role === 'VENDOR_ADMIN' || role.includes('VENDOR') || tenantContext.vendorId) {
+      throw new AuthorizationError('Permission Denied: Vendors are not permitted to assign or redistribute project codes.');
+    }
+
+    if (!projectCode) {
+      throw new ValidationError('Project code is required.');
+    }
+    if (!vendorId) {
+      throw new ValidationError('A valid vendor ID is required.');
+    }
+
+    await tenancyService.getProjectById(projectId, tenantContext);
+
+    if (!(await isDbProject(projectId))) {
+      return mockStore.assignProjectCode(projectId, projectCode, vendorId, tenantContext);
+    }
+
+    return withDbFallback(
+      async () => {
+        return db.transaction(async (trx) => {
+          // 1. Verify vendor exists
+          const vendor = await trx('vendors').where('id', vendorId).first();
+          if (!vendor) {
+            throw new NotFoundError(`Vendor '${vendorId}' not found.`);
+          }
+
+          // 2. Check previous assignment
+          let prevVendorId = null;
+          let prevVendor = null;
+          const hasAssignmentsTable = await trx.schema.hasTable('campaign_project_code_assignments');
+
+          if (hasAssignmentsTable) {
+            const existingAssignment = await trx('campaign_project_code_assignments')
+              .where({ project_id: projectId, project_code: projectCode })
+              .first();
+
+            if (existingAssignment) {
+              prevVendorId = existingAssignment.vendor_id;
+              if (prevVendorId) {
+                prevVendor = await trx('vendors').where('id', prevVendorId).first();
+              }
+
+              await trx('campaign_project_code_assignments')
+                .where({ id: existingAssignment.id })
+                .update({
+                  vendor_id: vendorId,
+                  assigned_by: tenantContext.userId || null,
+                  assigned_at: new Date(),
+                  updated_at: new Date(),
+                });
+            } else {
+              await trx('campaign_project_code_assignments').insert({
+                id: uuidv4(),
+                project_id: projectId,
+                project_code: projectCode,
+                vendor_id: vendorId,
+                assigned_by: tenantContext.userId || null,
+                assigned_at: new Date(),
+                created_at: new Date(),
+                updated_at: new Date(),
+              });
+            }
+          }
+
+          // 3. Ensure target vendor contracted in project_vendor_assignments
+          const existingAsg = await trx('project_vendor_assignments')
+            .where({ project_id: projectId, vendor_id: vendorId })
+            .first();
+
+          if (!existingAsg) {
+            await trx('project_vendor_assignments').insert({
+              id: uuidv4(),
+              project_id: projectId,
+              vendor_id: vendorId,
+              is_active: true,
+              created_at: new Date(),
+            });
+          } else if (!existingAsg.is_active) {
+            await trx('project_vendor_assignments')
+              .where('id', existingAsg.id)
+              .update({ is_active: true, updated_at: new Date() });
+          }
+
+          // 4. Update all matching campaign leads: reallocate / assign to new vendor!
+          const updatedRows = await trx('campaign_leads')
+            .where({ project_id: projectId, project_code: projectCode })
+            .update({
+              vendor_id: vendorId,
+              status: trx.raw("CASE WHEN status = 'COMPLETED' THEN 'COMPLETED' ELSE 'ASSIGNED' END"),
+              allocated_at: new Date(),
+              updated_at: new Date(),
+            });
+
+          const isRedistribution = Boolean(prevVendorId && prevVendorId !== vendorId);
+
+          return {
+            projectId,
+            projectCode,
+            vendorId,
+            vendorName: vendor.name,
+            vendorCode: vendor.code,
+            previousVendorId: prevVendorId,
+            previousVendorName: prevVendor?.name || null,
+            isRedistribution,
+            reallocatedCount: updatedRows,
+            message: isRedistribution
+              ? `Successfully redistributed project code '${projectCode}' (${updatedRows} leads) from '${prevVendor?.name || 'Previous Vendor'}' to '${vendor.name}'.`
+              : `Successfully assigned project code '${projectCode}' (${updatedRows} leads) to vendor '${vendor.name}'.`,
+          };
+        });
+      },
+      () => mockStore.assignProjectCode(projectId, projectCode, vendorId, tenantContext)
+    );
+  }
+
+  /**
+   * Get dynamic list of Assembly Constituencies (ACs) scoped strictly to the current user's role and assigned project codes.
+   */
+  async getCampaignConstituencies(projectId, tenantContext = {}) {
+    await tenancyService.getProjectById(projectId, tenantContext);
+
+    if (!(await isDbProject(projectId))) {
+      return mockStore.getCampaignConstituencies(projectId, tenantContext);
+    }
+
+    return withDbFallback(
+      async () => {
+        // Query from DB with isolation
+        const { leads } = await this.getCampaignLeads(projectId, {}, tenantContext);
+        const acMap = {};
+        const currentUserId = tenantContext.userId || tenantContext.id;
+
+        for (const lead of leads) {
+          const acName = lead.constituency || lead.ac_name || 'General AC';
+          if (!acMap[acName]) {
+            acMap[acName] = {
+              ac_name: acName,
+              total_leads: 0,
+              completed_leads: 0,
+              in_progress_leads: 0,
+              available_leads: 0,
+              is_claimed_by_me: false,
+              active_agents: new Set(),
+            };
+          }
+          const ac = acMap[acName];
+          ac.total_leads++;
+          if (lead.status === 'COMPLETED') {
+            ac.completed_leads++;
+          } else if (lead.status === 'IN_PROGRESS') {
+            ac.in_progress_leads++;
+            if (lead.assigned_agent_id) {
+              ac.active_agents.add(lead.assigned_agent_id);
+              if (lead.assigned_agent_id === currentUserId) {
+                ac.is_claimed_by_me = true;
+              }
+            }
+          } else {
+            if (!lead.assigned_agent_id) {
+              ac.available_leads++;
+            } else if (lead.assigned_agent_id === currentUserId) {
+              ac.is_claimed_by_me = true;
+              ac.available_leads++;
+            } else {
+              ac.in_progress_leads++;
+              ac.active_agents.add(lead.assigned_agent_id);
+            }
+          }
+        }
+
+        return Object.values(acMap).map((ac) => {
+          const isOtherAgentWorking = ac.active_agents.size > 0 && (!currentUserId || !ac.active_agents.has(currentUserId));
+          const isClaimedByOther = ac.available_leads === 0 && (ac.in_progress_leads > 0 || isOtherAgentWorking);
+          return {
+            ac_name: ac.ac_name,
+            total_leads: ac.total_leads,
+            completed_leads: ac.completed_leads,
+            in_progress_leads: ac.in_progress_leads,
+            available_leads: ac.available_leads,
+            is_claimed_by_other_agent: isClaimedByOther,
+            is_claimed_by_me: ac.is_claimed_by_me,
+            active_agents_count: ac.active_agents.size,
+          };
+        }).sort((a, b) => a.ac_name.localeCompare(b.ac_name));
+      },
+      () => mockStore.getCampaignConstituencies(projectId, tenantContext)
+    );
+  }
+
+  /**
+   * Atomically reserve / lock the next lead for an agent in a specific campaign & AC.
+   * Guarantees 1 lead to exactly 1 agent.
+   */
+  async lockNextCampaignLead(projectId, options = {}, tenantContext = {}) {
+    await tenancyService.getProjectById(projectId, tenantContext);
+
+    if (!(await isDbProject(projectId))) {
+      return mockStore.lockNextCampaignLead(projectId, options, tenantContext);
+    }
+
+    return withDbFallback(
+      async () => {
+        const { ac = null } = options;
+        const currentUserId = tenantContext.userId || tenantContext.id;
+
+        // Check if agent already has an in-progress lead
+        let query = db('campaign_leads')
+          .where('project_id', projectId)
+          .andWhere('assigned_agent_id', currentUserId)
+          .andWhere('status', 'IN_PROGRESS');
+        if (ac && ac !== 'ALL') query = query.andWhere('constituency', ac);
+        const existing = await query.first();
+        if (existing) return existing;
+
+        // Atomically lock the next pending lead
+        let candidateQuery = db('campaign_leads')
+          .where('project_id', projectId)
+          .whereIn('status', ['PENDING', 'ASSIGNED'])
+          .where(function () {
+            this.whereNull('assigned_agent_id').orWhere('assigned_agent_id', currentUserId);
+          });
+        if (ac && ac !== 'ALL') candidateQuery = candidateQuery.andWhere('constituency', ac);
+
+        const candidate = await candidateQuery.orderBy('created_at', 'asc').first();
+        if (!candidate) return null;
+
+        await db('campaign_leads')
+          .where('id', candidate.id)
+          .update({
+            assigned_agent_id: currentUserId,
+            status: 'IN_PROGRESS',
+            updated_at: new Date(),
+          });
+
+        return {
+          ...candidate,
+          assigned_agent_id: currentUserId,
+          status: 'IN_PROGRESS',
+        };
+      },
+      () => mockStore.lockNextCampaignLead(projectId, options, tenantContext)
+    );
+  }
+
+  /**
+   * Get campaign leads with STRICT multi-vendor data isolation and project_code scoping.
+   * Vendor A can NEVER see or access leads belonging to Vendor B or project codes not assigned to them!
+   * Organization Admin can access and survey all leads / any project_code!
    */
   async getCampaignLeads(projectId, filters = {}, tenantContext = {}) {
     await tenancyService.getProjectById(projectId, tenantContext);
@@ -663,14 +1002,51 @@ class ProjectsService {
           )
           .where('campaign_leads.project_id', projectId);
 
-        if (effectiveContext.vendorId) {
-          query = query.where('campaign_leads.vendor_id', effectiveContext.vendorId);
+        const isVendorUser = Boolean(
+          effectiveContext.vendorId ||
+          (effectiveContext.role && String(effectiveContext.role).toUpperCase().includes('VENDOR'))
+        );
+
+        if (isVendorUser && effectiveContext.vendorId) {
+          // Vendor Admin / Vendor Agent:
+          // Strictly scoped to project_codes explicitly assigned to their vendor!
+          const hasAssignmentsTable = await db.schema.hasTable('campaign_project_code_assignments').catch(() => false);
+          let assignedCodes = [];
+          if (hasAssignmentsTable) {
+            const assignmentRows = await db('campaign_project_code_assignments')
+              .where({ project_id: projectId, vendor_id: effectiveContext.vendorId })
+              .select('project_code')
+              .catch(() => []);
+            assignedCodes = assignmentRows.map((r) => r.project_code).filter(Boolean);
+          }
+
+          if (assignedCodes.length > 0) {
+            query = query.where('campaign_leads.vendor_id', effectiveContext.vendorId)
+                         .whereIn('campaign_leads.project_code', assignedCodes);
+          } else {
+            // If no project code assignments exist yet, scope to vendor_id
+            query = query.where('campaign_leads.vendor_id', effectiveContext.vendorId);
+          }
         } else if (filters.vendorId) {
           query = query.where('campaign_leads.vendor_id', filters.vendorId);
         }
 
+        // Project code filtering (accessible to Org Admin or to further filter)
+        if (filters.project_code || filters.projectCode) {
+          query = query.where('campaign_leads.project_code', filters.project_code || filters.projectCode);
+        }
+
         if (filters.status) {
           query = query.where('campaign_leads.status', filters.status);
+        }
+        if (filters.ac) {
+          const targetAc = String(filters.ac).trim();
+          query = query.where((b) => {
+            b.where('campaign_leads.constituency', targetAc)
+              .orWhere('campaign_leads.ac_name', targetAc)
+              .orWhereRaw("campaign_leads.metadata->>'ac_name' = ?", [targetAc])
+              .orWhereRaw("campaign_leads.metadata->>'constituency' = ?", [targetAc]);
+          });
         }
         if (filters.search) {
           const s = `%${filters.search}%`;
@@ -695,8 +1071,10 @@ class ProjectsService {
   }
 
   /**
-   * Survey a campaign lead with strict multi-vendor isolation verification.
-   * If Vendor A attempts to survey Vendor B's lead, request is rejected with 403 Forbidden!
+   * Survey a campaign lead with strict multi-vendor isolation and project_code verification.
+   * If Vendor A attempts to survey Vendor B's lead or a lead outside of assigned project codes,
+   * request is rejected with 403 Forbidden!
+   * Organization Admin can survey any lead / any project_code.
    */
   async surveyCampaignLead(leadId, surveyData = {}, tenantContext = {}) {
     return withDbFallback(
@@ -706,8 +1084,28 @@ class ProjectsService {
           return mockStore.surveyCampaignLead(leadId, tenantContext, surveyData);
         }
 
-        if (tenantContext.vendorId && lead.vendor_id && String(lead.vendor_id) !== String(tenantContext.vendorId)) {
-          throw new AuthorizationError('Multi-Vendor Isolation: You are forbidden from accessing or surveying leads allocated to another vendor agency.');
+        const isVendorUser = Boolean(
+          tenantContext.vendorId ||
+          (tenantContext.role && String(tenantContext.role).toUpperCase().includes('VENDOR'))
+        );
+
+        if (isVendorUser && tenantContext.vendorId) {
+          if (lead.vendor_id && String(lead.vendor_id) !== String(tenantContext.vendorId)) {
+            throw new AuthorizationError('Multi-Vendor Isolation: You are forbidden from accessing or surveying leads allocated to another vendor agency.');
+          }
+
+          // Check project_code scoping for vendor
+          const hasAssignmentsTable = await db.schema.hasTable('campaign_project_code_assignments').catch(() => false);
+          if (hasAssignmentsTable && lead.project_code) {
+            const anyAsg = await db('campaign_project_code_assignments')
+              .where({ project_id: lead.project_id, project_code: lead.project_code })
+              .first()
+              .catch(() => null);
+
+            if (anyAsg && String(anyAsg.vendor_id) !== String(tenantContext.vendorId)) {
+              throw new AuthorizationError('Multi-Vendor Isolation: You are forbidden from accessing or surveying leads outside of your assigned project code.');
+            }
+          }
         }
 
         let assignedAgentId = lead.assigned_agent_id || null;
@@ -1151,6 +1549,222 @@ class ProjectsService {
     }, tenantContext);
 
     return newVersion;
+  }
+
+  /**
+   * Get active vendors assigned to a specific project.
+   * Prevents 404 and provides full multi-vendor visibility.
+   *
+   * @param {string} projectId
+   * @param {object} tenantContext
+   * @returns {Promise<Array<object>>}
+   */
+  async getProjectVendors(projectId, tenantContext = {}) {
+    await tenancyService.getProjectById(projectId, tenantContext);
+
+    if (!(await isDbProject(projectId))) {
+      const asgs = (mockStore.data?.project_vendor_assignments || []).filter(
+        (a) => a.project_id === projectId && a.is_active !== false
+      );
+      const vendorList = (mockStore.data?.vendors || []).filter((v) =>
+        asgs.some((a) => a.vendor_id === v.id)
+      );
+      if (vendorList.length > 0) {
+        return vendorList.map((v) => {
+          const a = asgs.find((asg) => asg.vendor_id === v.id);
+          const allocatedCount = (mockStore.data?.campaign_leads || []).filter(
+            (l) => l.project_id === projectId && l.vendor_id === v.id
+          ).length;
+          return {
+            id: v.id,
+            name: v.name,
+            code: v.code,
+            role: v.role || 'Field Vendor',
+            quota: a?.quota ? JSON.parse(typeof a.quota === 'string' ? a.quota : '{}')?.target || 0 : 0,
+            allocatedCount,
+            status: v.status || 'ACTIVE',
+          };
+        });
+      }
+      return (mockStore.data?.vendors || []).slice(0, 3).map((v) => ({
+        id: v.id,
+        name: v.name,
+        code: v.code,
+        role: v.role || 'Field Vendor',
+        quota: 0,
+        allocatedCount: 0,
+        status: v.status || 'ACTIVE',
+      }));
+    }
+
+    return withDbFallback(
+      async () => {
+        const rows = await db('project_vendor_assignments')
+          .join('vendors', 'project_vendor_assignments.vendor_id', 'vendors.id')
+          .where('project_vendor_assignments.project_id', projectId)
+          .where('project_vendor_assignments.is_active', true)
+          .select(
+            'vendors.id',
+            'vendors.name',
+            'vendors.code',
+            'project_vendor_assignments.quota',
+            'vendors.status'
+          );
+
+        const counts = await db('campaign_leads')
+          .where('project_id', projectId)
+          .whereNotNull('vendor_id')
+          .groupBy('vendor_id')
+          .select('vendor_id', db.raw('count(*) as count'));
+
+        const countMap = {};
+        counts.forEach((c) => {
+          countMap[c.vendor_id] = parseInt(c.count, 10);
+        });
+
+        return rows.map((r) => {
+          let quotaVal = 0;
+          try {
+            const q = typeof r.quota === 'string' ? JSON.parse(r.quota) : r.quota;
+            quotaVal = q?.target || 0;
+          } catch {
+            quotaVal = 0;
+          }
+          return {
+            id: r.id,
+            name: r.name,
+            code: r.code,
+            role: 'Field Vendor',
+            quota: quotaVal,
+            allocatedCount: countMap[r.id] || 0,
+            status: r.status || 'ACTIVE',
+          };
+        });
+      },
+      () => []
+    );
+  }
+
+  /**
+   * Preview uncompleted leads for a campaign on a specific date before rechaining.
+   *
+   * @param {string} projectId
+   * @param {object} options - { date: 'YYYY-MM-DD', vendorId }
+   * @param {object} tenantContext
+   * @returns {Promise<object>}
+   */
+  async previewRechain(projectId, options = {}, tenantContext = {}) {
+    const { date, vendorId } = options;
+    if (!date) {
+      throw new ValidationError('A target date (YYYY-MM-DD) is required to preview rechained data.');
+    }
+
+    if (!(await isDbProject(projectId))) {
+      return mockStore.previewRechain(projectId, { date, vendorId });
+    }
+
+    return withDbFallback(
+      async () => {
+        let q = db('campaign_leads')
+          .where('project_id', projectId)
+          .whereIn('status', ['PENDING', 'ASSIGNED', 'IN_PROGRESS', 'FAILED', 'UNREACHED'])
+          .whereNull('surveyed_at')
+          .whereRaw(`DATE(created_at) = ?`, [date]);
+
+        if (vendorId) {
+          q = q.where('vendor_id', vendorId);
+        }
+
+        const countRes = await q.clone().count('* as count').first();
+        const count = parseInt(countRes?.count || 0, 10);
+        const samples = await q.clone().orderBy('created_at', 'desc').limit(5);
+
+        return {
+          projectId,
+          date,
+          vendorId: vendorId || null,
+          uncompletedCount: count,
+          samples: samples.map((s) => ({
+            id: s.id,
+            respondent_name: s.respondent_name,
+            phone_number: s.phone_number,
+            constituency: s.constituency,
+            created_at: s.created_at,
+            status: s.status,
+          })),
+        };
+      },
+      () => mockStore.previewRechain(projectId, { date, vendorId })
+    );
+  }
+
+  /**
+   * Rechain uncompleted leads from a specific historical date into today's active survey pool.
+   * LIFO priority: rechained leads are stamped with current timestamp and unlocked.
+   *
+   * @param {string} projectId
+   * @param {object} options - { date: 'YYYY-MM-DD', vendorId, resetLockOnly }
+   * @param {object} tenantContext
+   * @returns {Promise<object>}
+   */
+  async rechainCampaignLeads(projectId, options = {}, tenantContext = {}) {
+    const { date, vendorId } = options;
+    if (!date) {
+      throw new ValidationError('A target date (YYYY-MM-DD) is required for rechaining campaign leads.');
+    }
+
+    if (!(await isDbProject(projectId))) {
+      return mockStore.rechainCampaignLeads(projectId, { date, vendorId });
+    }
+
+    return withDbFallback(
+      async () => {
+        return db.transaction(async (trx) => {
+          let q = trx('campaign_leads')
+            .where('project_id', projectId)
+            .whereIn('status', ['PENDING', 'ASSIGNED', 'IN_PROGRESS', 'FAILED', 'UNREACHED'])
+            .whereNull('surveyed_at')
+            .whereRaw(`DATE(created_at) = ?`, [date]);
+
+          if (vendorId) {
+            q = q.where('vendor_id', vendorId);
+          }
+
+          const targetLeads = await q.select('id', 'metadata');
+          if (targetLeads.length === 0) {
+            return {
+              projectId,
+              date,
+              rechainedCount: 0,
+              message: `No uncompleted leads found for date ${date}.`,
+            };
+          }
+
+          const now = new Date();
+          const ids = targetLeads.map((l) => l.id);
+
+          await trx('campaign_leads')
+            .whereIn('id', ids)
+            .update({
+              status: 'PENDING',
+              locked_by_auditor: null,
+              locked_at: null,
+              assigned_agent_id: null,
+              allocated_at: now,
+              created_at: now, // Re-stamps to today for LIFO priority
+              updated_at: now,
+            });
+
+          return {
+            projectId,
+            date,
+            rechainedCount: ids.length,
+            message: `Successfully rechained ${ids.length} uncompleted lead(s) from ${date} into today's active survey queue!`,
+          };
+        });
+      },
+      () => mockStore.rechainCampaignLeads(projectId, { date, vendorId })
+    );
   }
 }
 

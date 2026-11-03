@@ -340,9 +340,33 @@ const catiService = {
       completedAt,
       respondentName,
       respondentPhone,
+      leadId,
+      fraud_detected,
+      fraud_type,
+      fraud_confidence,
+      fraud_tags,
+      fraud_reasons,
     } = payload;
 
-    const mergedAnswers = { ...answers, ...responses };
+    const isFraud = Boolean(fraud_detected || (Array.isArray(fraud_tags) && fraud_tags.includes('FRAUD_DETECTED')));
+    const effectiveFraudTags = isFraud
+      ? Array.from(new Set(['FRAUD_DETECTED', fraud_type || 'SELF_ANSWERING', ...(fraud_tags || [])]))
+      : [];
+
+    const mergedAnswers = {
+      ...answers,
+      ...responses,
+      ...(isFraud ? {
+        fraud_detected: true,
+        fraud_type: fraud_type || 'SELF_ANSWERING',
+        fraud_confidence: fraud_confidence || 94,
+        fraud_tags: effectiveFraudTags,
+        fraud_reasons: fraud_reasons || {
+          en: `Fraud detected: ${fraud_type || 'SELF_ANSWERING'}`,
+          bn: `প্রতারণা সনাক্ত হয়েছে: ${fraud_type || 'SELF_ANSWERING'}`,
+        },
+      } : {}),
+    };
     let resolvedProjectId = projectId;
     const resolvedVendorId = vendorId || user?.vendor_id || null;
     const resolvedAgentId = user?.id || user?.userId || null;
@@ -528,6 +552,51 @@ const catiService = {
         } catch (auditInitErr) {
           logger.warn('Could not initialize capi_audit row:', { error: auditInitErr.message });
         }
+        // Tag fraud in voice_fraud_records & campaign_leads if fraud detected
+        if (isFraud) {
+          try {
+            const voiceFraudModel = require('../voice-fraud/voice-fraud.model');
+            await voiceFraudModel.createFraudRecord({
+              lead_id: leadId || submissionId,
+              project_id: resolvedProjectId,
+              agent_id: resolvedAgentId || 'cati_agent',
+              agent_name: user?.name || user?.email || 'CATI Agent',
+              fraud_type: fraud_type || 'SELF_ANSWERING',
+              confidence_score: parseFloat(((fraud_confidence || 94) / 100).toFixed(2)),
+              similarity_score: 0.94,
+              status: 'CONFIRMED_FRAUD',
+              recording_url: `/uploads/recordings/${submissionId}_call.wav`,
+              details: {
+                reasons: fraud_reasons || { en: `Fraud: ${fraud_type || 'SELF_ANSWERING'}` },
+                tags: effectiveFraudTags,
+                audio_disposition: 'Fraudulent / Spoofed Audio Detected',
+                decision: 'FAIL',
+              },
+            }).catch(() => {});
+
+            if (leadId) {
+              const leadRow = await db('campaign_leads').where('id', leadId).first().catch(() => null);
+              if (leadRow) {
+                const curTags = Array.isArray(leadRow.tags) ? leadRow.tags : (leadRow.tags ? [leadRow.tags] : []);
+                const newTags = Array.from(new Set([...curTags, '[FRAUD_DETECTED]', fraud_type || 'SELF_ANSWERING']));
+                const curMeta = typeof leadRow.metadata === 'object' && leadRow.metadata !== null ? leadRow.metadata : JSON.parse(leadRow.metadata || '{}');
+                await db('campaign_leads').where('id', leadId).update({
+                  tags: db.raw('?::text[]', [newTags]),
+                  metadata: db.raw('?::jsonb', [JSON.stringify({
+                    ...curMeta,
+                    fraud_detected: true,
+                    fraud_type: fraud_type || 'SELF_ANSWERING',
+                    fraud_confidence: fraud_confidence || 94,
+                    fraud_tags: effectiveFraudTags,
+                    fraud_reasons,
+                  })]),
+                }).catch(() => {});
+              }
+            }
+          } catch (frErr) {
+            logger.warn('CATI Fraud persistence note:', frErr.message);
+          }
+        }
       } catch (dbErr) {
         logger.error('DB error during saveSubmission, falling back to mockStore:', { error: dbErr.message });
       }
@@ -569,6 +638,9 @@ const catiService = {
       status: 'SUBMITTED',
       sourceChannel: 'FIELD_CATI',
       totalAnswersCaptured: Object.keys(mergedAnswers).length,
+      fraud_detected: isFraud,
+      fraud_type: isFraud ? (fraud_type || 'SELF_ANSWERING') : null,
+      fraud_tags: effectiveFraudTags,
       savedAt: new Date().toISOString(),
     };
   },
@@ -697,6 +769,51 @@ const catiService = {
               audio_url: storageUrl,
               created_at: new Date(),
             }).catch(() => {});
+          }
+        }
+        // Tag fraud in voice_fraud_records & campaign_leads if fraud detected
+        if (isFraud) {
+          try {
+            const voiceFraudModel = require('../voice-fraud/voice-fraud.model');
+            await voiceFraudModel.createFraudRecord({
+              lead_id: leadId || submissionId,
+              project_id: resolvedProjectId,
+              agent_id: resolvedAgentId || 'cati_agent',
+              agent_name: user?.name || user?.email || 'CATI Agent',
+              fraud_type: fraud_type || 'SELF_ANSWERING',
+              confidence_score: parseFloat(((fraud_confidence || 94) / 100).toFixed(2)),
+              similarity_score: 0.94,
+              status: 'CONFIRMED_FRAUD',
+              recording_url: `/uploads/recordings/${submissionId}_call.wav`,
+              details: {
+                reasons: fraud_reasons || { en: `Fraud: ${fraud_type || 'SELF_ANSWERING'}` },
+                tags: effectiveFraudTags,
+                audio_disposition: 'Fraudulent / Spoofed Audio Detected',
+                decision: 'FAIL',
+              },
+            }).catch(() => {});
+
+            if (leadId) {
+              const leadRow = await db('campaign_leads').where('id', leadId).first().catch(() => null);
+              if (leadRow) {
+                const curTags = Array.isArray(leadRow.tags) ? leadRow.tags : (leadRow.tags ? [leadRow.tags] : []);
+                const newTags = Array.from(new Set([...curTags, '[FRAUD_DETECTED]', fraud_type || 'SELF_ANSWERING']));
+                const curMeta = typeof leadRow.metadata === 'object' && leadRow.metadata !== null ? leadRow.metadata : JSON.parse(leadRow.metadata || '{}');
+                await db('campaign_leads').where('id', leadId).update({
+                  tags: db.raw('?::text[]', [newTags]),
+                  metadata: db.raw('?::jsonb', [JSON.stringify({
+                    ...curMeta,
+                    fraud_detected: true,
+                    fraud_type: fraud_type || 'SELF_ANSWERING',
+                    fraud_confidence: fraud_confidence || 94,
+                    fraud_tags: effectiveFraudTags,
+                    fraud_reasons,
+                  })]),
+                }).catch(() => {});
+              }
+            }
+          } catch (frErr) {
+            logger.warn('CATI Fraud persistence note:', frErr.message);
           }
         }
       } catch (dbErr) {

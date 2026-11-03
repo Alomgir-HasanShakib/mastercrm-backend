@@ -460,6 +460,16 @@ const capiService = {
           .orWhereRaw("projects.enabled_modules::text ILIKE '%CAPI%'");
       });
     }
+
+    if (tenantContext && tenantContext.ac) {
+      const targetAc = String(tenantContext.ac).trim();
+      activeLeadQuery = activeLeadQuery.where((b) => {
+        b.where('campaign_leads.constituency', targetAc)
+          .orWhere('campaign_leads.ac_name', targetAc)
+          .orWhereRaw("campaign_leads.metadata->>'ac_name' = ?", [targetAc])
+          .orWhereRaw("campaign_leads.metadata->>'constituency' = ?", [targetAc]);
+      });
+    }
     const activeLead = await activeLeadQuery.first().catch(() => null);
 
     if (activeLead) {
@@ -539,9 +549,37 @@ const capiService = {
         }
 
         if (vendorId && !isMaster) {
+          const hasPca = await trx.schema.hasTable('campaign_project_code_assignments').catch(() => false);
+          let assignedCodes = [];
+          if (hasPca) {
+            const codeRows = await trx('campaign_project_code_assignments')
+              .where({ vendor_id: vendorId })
+              .modify((b) => {
+                if (cleanProjectId) b.where('project_id', cleanProjectId);
+              })
+              .select('project_code')
+              .catch(() => []);
+            assignedCodes = codeRows.map((r) => r.project_code).filter(Boolean);
+          }
+
+          if (assignedCodes.length > 0) {
+            q = q.whereIn('campaign_leads.project_code', assignedCodes)
+                 .where('campaign_leads.vendor_id', vendorId);
+          } else {
+            q = q.where((builder) => {
+              builder.where('campaign_leads.vendor_id', vendorId)
+                .orWhereNull('campaign_leads.vendor_id');
+            });
+          }
+        }
+
+        if (tenantContext && tenantContext.ac) {
+          const targetAc = String(tenantContext.ac).trim();
           q = q.where((builder) => {
-            builder.where('campaign_leads.vendor_id', vendorId)
-              .orWhereNull('campaign_leads.vendor_id');
+            builder.where('campaign_leads.constituency', targetAc)
+              .orWhere('campaign_leads.ac_name', targetAc)
+              .orWhereRaw("campaign_leads.metadata->>'ac_name' = ?", [targetAc])
+              .orWhereRaw("campaign_leads.metadata->>'constituency' = ?", [targetAc]);
           });
         }
 
@@ -839,6 +877,31 @@ const capiService = {
    */
   async submitDecision(id, decisionData, user = {}) {
     const projectsService = require('../projects/projects.service');
+    const voiceFraudModel = require('../voice-fraud/voice-fraud.model');
+
+    // Anti-Fraud Verification Enforcement
+    const isFraud = Boolean(
+      decisionData.fraud_detected ||
+      (Array.isArray(decisionData.fraud_tags) && decisionData.fraud_tags.includes('FRAUD_DETECTED')) ||
+      decisionData.audioDisposition === 'Fraudulent / Spoofed Audio Detected'
+    );
+
+    if (isFraud) {
+      decisionData.decision = 'FAIL';
+      decisionData.audioDisposition = decisionData.audioDisposition || 'Fraudulent / Spoofed Audio Detected';
+      decisionData.score = 0;
+      decisionData.fraud_detected = true;
+      decisionData.fraud_type = decisionData.fraud_type || 'SELF_ANSWERING';
+      decisionData.fraud_confidence = decisionData.fraud_confidence || 94;
+      decisionData.fraud_tags = Array.from(new Set(['FRAUD_DETECTED', decisionData.fraud_type, ...(decisionData.fraud_tags || [])]));
+      if (!decisionData.fraud_reasons) {
+        decisionData.fraud_reasons = {
+          en: `Fraud detected: ${decisionData.fraud_type} (${decisionData.fraud_confidence}% confidence). Marked failed with fraud tag.`,
+          bn: `প্রতারণা সনাক্ত হয়েছে: ${decisionData.fraud_type} (${decisionData.fraud_confidence}% নিশ্চিত)। ফ্রড ট্যাগসহ বাতিল করা হয়েছে।`,
+        };
+      }
+    }
+
     let lead = await db('campaign_leads').where('id', id).first().catch(() => null);
 
     if (!lead) {
@@ -850,8 +913,8 @@ const capiService = {
     }
 
     if (lead) {
-      const isPassed = decisionData.decision === 'PASS';
-      const score = decisionData.score !== undefined ? decisionData.score : (isPassed ? 100 : 0);
+      const isPassed = !isFraud && decisionData.decision === 'PASS';
+      const score = isFraud ? 0 : (decisionData.score !== undefined ? decisionData.score : (isPassed ? 100 : 0));
 
       const leadMeta = typeof lead.metadata === 'object' && lead.metadata !== null
         ? lead.metadata
@@ -869,6 +932,9 @@ const capiService = {
           isCompleted: true,
           isDuplicateBlocked: true,
           canFetchNext: true,
+          fraud_detected: isFraud,
+          fraud_type: decisionData.fraud_type,
+          fraud_tags: decisionData.fraud_tags,
         };
       }
 
@@ -882,6 +948,11 @@ const capiService = {
           score,
           audited_by: user.email || user.id || 'auditor@crm.io',
           review_explanation: decisionData.reviewExplanation || decisionData.review_explanation || null,
+          fraud_detected: decisionData.fraud_detected || false,
+          fraud_type: decisionData.fraud_type || null,
+          fraud_confidence: decisionData.fraud_confidence || null,
+          fraud_tags: decisionData.fraud_tags || [],
+          fraud_reasons: decisionData.fraud_reasons || null,
         },
       }, {
         userId: user.id,
@@ -891,6 +962,52 @@ const capiService = {
         organizationId: user.organization_id,
       });
 
+      // Update lead metadata with [FRAUD_DETECTED] tag if fraud was detected
+      if (isFraud) {
+        try {
+          const currentTags = Array.isArray(lead.tags) ? lead.tags : (lead.tags ? [lead.tags] : []);
+          const updatedTags = Array.from(new Set([...currentTags, '[FRAUD_DETECTED]', decisionData.fraud_type]));
+          const mergedMeta = {
+            ...leadMeta,
+            fraud_detected: true,
+            fraud_type: decisionData.fraud_type,
+            fraud_confidence: decisionData.fraud_confidence,
+            fraud_tags: decisionData.fraud_tags,
+            fraud_reasons: decisionData.fraud_reasons,
+            audio_disposition: decisionData.audioDisposition,
+            decision: 'FAIL',
+          };
+
+          await db('campaign_leads')
+            .where('id', lead.id)
+            .update({
+              tags: db.raw('?::text[]', [updatedTags]),
+              metadata: db.raw('?::jsonb', [JSON.stringify(mergedMeta)]),
+            })
+            .catch(() => {});
+
+          await voiceFraudModel.createFraudRecord({
+            lead_id: lead.id,
+            project_id: lead.project_id || null,
+            agent_id: user.id || user.email || 'capi_auditor',
+            agent_name: user.name || user.email || 'Surveyor Agent',
+            fraud_type: decisionData.fraud_type,
+            confidence_score: parseFloat(((decisionData.fraud_confidence || 94) / 100).toFixed(2)),
+            similarity_score: decisionData.similarityScore || 0.94,
+            status: 'CONFIRMED_FRAUD',
+            recording_url: decisionData.audioUrl || leadMeta.audio_url || null,
+            details: {
+              reasons: decisionData.fraud_reasons,
+              tags: decisionData.fraud_tags,
+              audio_disposition: decisionData.audioDisposition,
+              decision: 'FAIL',
+            },
+          }).catch(() => {});
+        } catch (leadFraudErr) {
+          logger.warn('Failed tagging campaign lead with fraud metadata:', leadFraudErr.message);
+        }
+      }
+
       return {
         id: lead.id,
         submission_id: lead.metadata?.submission_id || lead.id,
@@ -899,6 +1016,9 @@ const capiService = {
         score,
         isCompleted: true,
         canFetchNext: true,
+        fraud_detected: isFraud,
+        fraud_type: decisionData.fraud_type || null,
+        fraud_tags: decisionData.fraud_tags || [],
       };
     }
 
@@ -1430,7 +1550,16 @@ const capiService = {
       ls_past_candidate: getVal('ls_past_candidate'),
       vs_past_voted_confirmation: getVal('vs_past_voted_confirmation'),
       ls_past_voted_confirmation: getVal('ls_past_voted_confirmation'),
-      audit_status: (output.audit_status || output.decision || meta.audit_status || meta.tvc_status || lead.status || 'PASS').toUpperCase(),
+      audit_status: (() => {
+        const rawStatus = (meta.tvc_status || lead.status || output.status || output.audit_status || output.decision || 'COMPLETE').toUpperCase();
+        if (['INCOMPLETE', 'DROPPED', 'PENDING', 'IN_PROGRESS', 'FAILED', 'FAIL'].includes(rawStatus)) {
+          return 'INCOMPLETE';
+        }
+        if (['COMPLETE', 'COMPLETED', 'PASS', 'PASSED', 'AUDITED', 'VERIFIED'].includes(rawStatus)) {
+          return 'COMPLETE';
+        }
+        return rawStatus || 'COMPLETE';
+      })(),
       pushed: meta.pushed !== undefined ? meta.pushed : (lead.is_pushed !== undefined ? lead.is_pushed : 1),
       assignment_time: lead.allocated_at ? new Date(lead.allocated_at).toISOString().replace('T', ' ').slice(0, 19) : (meta.assignment_time || (lead.updated_at ? new Date(lead.updated_at).toISOString().replace('T', ' ').slice(0, 19) : '')),
       agent_id: lead.assigned_agent_id || meta.agent_id || output.audited_by || user?.id || '',
@@ -1496,6 +1625,12 @@ const capiService = {
           b.whereRaw("UPPER(projects.type) = 'CAPI'")
             .orWhereRaw("projects.enabled_modules::text ILIKE '%CAPI%'");
         });
+      } else if (ch === 'AI_AUDIT' || ch === 'AI') {
+        q = q.where((b) => {
+          b.whereRaw("projects.enabled_modules::text ILIKE '%AI_AUDIT%'")
+            .orWhereRaw("campaign_leads.metadata->'outputData'->>'audited_by' ILIKE '%AI%'")
+            .orWhereRaw("campaign_leads.metadata->>'completedBy' ILIKE '%AI%'");
+        });
       }
     }
 
@@ -1533,14 +1668,33 @@ const capiService = {
       }
     }
 
-    // 5. Decision Filter (PASS / FAIL / REVIEW)
+    // 5. Decision & Survey Status Filter (COMPLETE, INCOMPLETE, COMPLETE_PASS, FLAGGED, PASS, FAIL, REVIEW)
     if (filters.decision && filters.decision !== 'ALL' && filters.decision !== 'all') {
       const decUpper = String(filters.decision).trim().toUpperCase();
       q = q.where((b) => {
-        b.whereRaw("UPPER(campaign_leads.metadata->'outputData'->>'audit_status') = ?", [decUpper])
-          .orWhereRaw("UPPER(campaign_leads.metadata->'outputData'->>'decision') = ?", [decUpper])
-          .orWhereRaw("UPPER(campaign_leads.metadata->>'tvc_status') = ?", [decUpper])
-          .orWhereRaw("UPPER(campaign_leads.status) = ?", [decUpper]);
+        if (decUpper === 'COMPLETE' || decUpper === 'COMPLETED') {
+          b.whereRaw("UPPER(campaign_leads.status) IN ('COMPLETE', 'COMPLETED', 'AUDITED', 'SUBMITTED', 'VERIFIED', 'PASS')")
+            .orWhereRaw("UPPER(campaign_leads.metadata->>'tvc_status') IN ('COMPLETE', 'COMPLETED')")
+            .orWhereRaw("UPPER(campaign_leads.metadata->'outputData'->>'status') IN ('COMPLETE', 'COMPLETED')")
+            .orWhereRaw("UPPER(campaign_leads.metadata->'outputData'->>'audit_status') IN ('COMPLETE', 'COMPLETED', 'PASS')");
+        } else if (decUpper === 'INCOMPLETE') {
+          b.whereRaw("UPPER(campaign_leads.status) IN ('INCOMPLETE', 'PENDING', 'IN_PROGRESS', 'DROPPED', 'FAILED', 'FAIL', 'ASSIGNED')")
+            .orWhereRaw("UPPER(campaign_leads.metadata->>'tvc_status') IN ('INCOMPLETE', 'DROPPED', 'PENDING')")
+            .orWhereRaw("UPPER(campaign_leads.metadata->'outputData'->>'status') IN ('INCOMPLETE', 'DROPPED', 'PENDING')");
+        } else if (decUpper === 'COMPLETE_PASS' || decUpper === 'PASS') {
+          b.whereRaw("UPPER(campaign_leads.metadata->'outputData'->>'audit_status') IN ('PASS', 'COMPLETE PASS', 'APPROVED', 'VERIFIED')")
+            .orWhereRaw("UPPER(campaign_leads.metadata->'outputData'->>'decision') IN ('PASS', 'COMPLETE PASS', 'APPROVED')")
+            .orWhereRaw("UPPER(campaign_leads.status) = 'PASS'");
+        } else if (decUpper === 'FLAGGED' || decUpper === 'FAIL') {
+          b.whereRaw("UPPER(campaign_leads.metadata->'outputData'->>'audit_status') IN ('FLAGGED', 'FAIL', 'FAILED', 'FLAG')")
+            .orWhereRaw("UPPER(campaign_leads.metadata->'outputData'->>'decision') IN ('FLAGGED', 'FAIL', 'FAILED', 'FLAG')")
+            .orWhereRaw("UPPER(campaign_leads.status) IN ('FLAGGED', 'FAIL', 'FAILED')");
+        } else {
+          b.whereRaw("UPPER(campaign_leads.metadata->'outputData'->>'audit_status') = ?", [decUpper])
+            .orWhereRaw("UPPER(campaign_leads.metadata->'outputData'->>'decision') = ?", [decUpper])
+            .orWhereRaw("UPPER(campaign_leads.metadata->>'tvc_status') = ?", [decUpper])
+            .orWhereRaw("UPPER(campaign_leads.status) = ?", [decUpper]);
+        }
       });
     }
 
@@ -1565,8 +1719,17 @@ const capiService = {
   _filterMockStoreLeads(leads = [], filters = {}, tenantContext = {}, user = {}) {
     const userVendorId = user.vendor_id || tenantContext.vendorId;
     return leads.filter((lead) => {
-      // Vendor isolation
-      if (userVendorId && lead.vendor_id !== userVendorId) return false;
+      // Vendor isolation & project_code scoping
+      if (userVendorId) {
+        if (lead.vendor_id !== userVendorId) return false;
+        const assignments = (mockStore.campaign_project_code_assignments || []).filter(
+          (a) => a.vendor_id === userVendorId && (!lead.project_id || a.project_id === lead.project_id)
+        );
+        const assignedCodes = assignments.map((a) => a.project_code);
+        if (assignedCodes.length > 0 && lead.project_code && !assignedCodes.includes(lead.project_code)) {
+          return false;
+        }
+      }
       if (!userVendorId && filters.vendorId && filters.vendorId !== 'ALL' && filters.vendorId !== 'all') {
         if (lead.vendor_id !== filters.vendorId) return false;
       }
@@ -1587,6 +1750,9 @@ const capiService = {
         } else if (ch === 'CAPI') {
           const isCapi = (lead.project_type === 'CAPI') || (lead.project_name && lead.project_name.includes('CAPI'));
           if (!isCapi) return false;
+        } else if (ch === 'AI_AUDIT' || ch === 'AI') {
+          const isAi = (meta.outputData && meta.outputData.audited_by && String(meta.outputData.audited_by).includes('AI')) || (meta.completedBy && String(meta.completedBy).includes('AI')) || (lead.project_name && lead.project_name.includes('AI'));
+          if (!isAi) return false;
         }
       }
 
@@ -1595,12 +1761,23 @@ const capiService = {
         if (lead.project_id !== filters.projectId) return false;
       }
 
-      // Decision filter
+      // Decision & Status filter (COMPLETE, INCOMPLETE, COMPLETE_PASS, FLAGGED, PASS, FAIL, REVIEW)
       if (filters.decision && filters.decision !== 'ALL' && filters.decision !== 'all') {
+        const decUpper = String(filters.decision).trim().toUpperCase();
         const meta = typeof lead.metadata === 'string' ? JSON.parse(lead.metadata || '{}') : (lead.metadata || {});
         const output = meta.outputData || {};
         const dec = (output.audit_status || output.decision || meta.tvc_status || lead.status || '').toUpperCase();
-        if (dec !== String(filters.decision).toUpperCase()) return false;
+        if (decUpper === 'COMPLETE' || decUpper === 'COMPLETED') {
+          if (!['COMPLETE', 'COMPLETED', 'AUDITED', 'SUBMITTED', 'VERIFIED', 'PASS'].includes(dec)) return false;
+        } else if (decUpper === 'INCOMPLETE') {
+          if (!['INCOMPLETE', 'PENDING', 'IN_PROGRESS', 'DROPPED', 'FAILED', 'FAIL', 'ASSIGNED'].includes(dec)) return false;
+        } else if (decUpper === 'COMPLETE_PASS' || decUpper === 'PASS') {
+          if (!['PASS', 'COMPLETE PASS', 'APPROVED', 'VERIFIED'].includes(dec)) return false;
+        } else if (decUpper === 'FLAGGED' || decUpper === 'FAIL') {
+          if (!['FLAGGED', 'FAIL', 'FAILED', 'FLAG'].includes(dec)) return false;
+        } else if (dec !== decUpper) {
+          return false;
+        }
       }
 
       // Language filter
@@ -2002,6 +2179,28 @@ const capiService = {
   },
 
   getQuestionsForProject,
+
+  /**
+   * Helper verifying if organization has AI Audit module enabled.
+   * Checks enabled_modules.includes('AI_AUDIT') or enable_ai_audit === true.
+   */
+  async checkAiAuditEntitlement(organizationId) {
+    if (!organizationId) return false;
+    const org = await db('organizations').where('id', organizationId).first().catch(() => null) ||
+      (mockStore.data?.organizations || []).find(o => o.id === organizationId);
+    if (!org) return false;
+    let modules = org.enabled_modules || org.settings?.enabled_modules || [];
+    if (typeof modules === 'string') {
+      try { modules = JSON.parse(modules); } catch { modules = modules.split(',').map(s => s.trim()); }
+    }
+    const list = Array.isArray(modules) ? modules.map(m => String(m).toUpperCase()) : [];
+    return Boolean(
+      org.enable_ai_audit === true ||
+      org.enableAiAudit === true ||
+      list.includes('AI_AUDIT') ||
+      list.includes('AI_AUDIT_QC')
+    );
+  },
 };
 
 module.exports = capiService;

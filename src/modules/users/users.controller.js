@@ -6,6 +6,7 @@
 const { success, paginated } = require('../../utils/response');
 const { parsePagination, buildPaginationMeta } = require('../../utils/pagination');
 const { auditLog } = require('../../services/auditLog');
+const { AuthorizationError } = require('../../utils/errors');
 const usersService = require('./users.service');
 
 /**
@@ -67,6 +68,11 @@ const getById = async (req, res, next) => {
  */
 const create = async (req, res, next) => {
   try {
+    const userRole = (req.user?.role || req.user?.roleName || req.user?.role_slug || '').toUpperCase().replace(/\s+/g, '_');
+    if (userRole.includes('VENDOR') || req.user?.vendor_id || req.user?.vendorId) {
+      throw new AuthorizationError('Vendor Admins cannot create user accounts. User accounts must be created by an Organization Administrator.');
+    }
+
     const createdUser = await usersService.createUser(req.body, req.tenantContext);
 
     await auditLog({
@@ -171,6 +177,36 @@ const remove = async (req, res, next) => {
 };
 
 /**
+ * Resets a user's password (Admin / Vendor action).
+ *
+ * @param {import('express').Request} req - Express request
+ * @param {import('express').Response} res - Express response
+ * @param {import('express').NextFunction} next - Express next function
+ */
+const resetPassword = async (req, res, next) => {
+  try {
+    const { newPassword } = req.body;
+    const targetUser = await usersService.resetUserPassword(req.params.id, newPassword, req.tenantContext);
+
+    await auditLog({
+      userId: req.user?.userId || req.user?.id,
+      organizationId: targetUser.organization_id || req.tenantContext?.organizationId,
+      action: 'ADMIN_PASSWORD_RESET',
+      module: 'USERS',
+      resource: 'users',
+      resourceId: req.params.id,
+      details: { targetUserId: req.params.id, targetEmail: targetUser.email },
+      ipAddress: req.ip || req.connection?.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
+
+    return success(res, null, 'User password has been reset successfully.', 200);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+/**
  * Retrieves all project assignments for a user.
  *
  * @param {import('express').Request} req - Express request
@@ -251,8 +287,13 @@ const removeAssignment = async (req, res, next) => {
  */
 const getQuotaStats = async (req, res, next) => {
   try {
-    const orgId = req.tenantContext?.organizationId || req.query.organizationId || '11111111-1111-1111-1111-111111111111';
-    const stats = await usersService.getOrganizationQuotaStats(orgId);
+    const orgId =
+      req.query.organizationId ||
+      req.tenantContext?.organizationId ||
+      req.user?.organization_id ||
+      req.user?.organizationId ||
+      null;
+    const stats = await usersService.getOrganizationQuotaStats(orgId, req.tenantContext);
     return success(res, stats, 'Organization quota and licensing stats retrieved successfully', 200);
   } catch (err) {
     return next(err);
@@ -389,4 +430,5 @@ module.exports = {
   createDocument,
   verifyDocument,
   bulkImport,
+  resetPassword,
 };

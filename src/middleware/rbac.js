@@ -45,29 +45,50 @@ const ROLE_PERMISSIONS_MAP = {
     'tvc:*', 'fa:*', 'feedback:*', 'reports:*', 'dialer:*', 'exam:*', 'exams:*', 'realtime:*', 'audit-log:*', 'audit:*'
   ],
   VENDOR_ADMIN: [
-    'vendors:read', 'projects:read', 'users:read', 'submissions:*', 'reports:read', 'dialer:*',
-    'capi:*', 'tvc:*', 'field_cati:*', 'field-cati:*', 'audit-log:read', 'audit:read'
+    'vendors:*', 'projects:read', 'projects:*', 'users:*', 'users:manage', 'users:read', 'submissions:*', 'reports:read', 'dialer:*',
+    'capi:*', 'tvc:*', 'field_cati:*', 'field-cati:*', 'audit-log:read', 'audit:read', 'operations:*', 'realtime:*'
   ],
   TVC_AGENT: [
-    'tvc:*', 'dialer:*', 'submissions:read'
+    'tvc:*', 'dialer:*', 'submissions:*', 'projects:read', 'projects:*', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'
+  ],
+  TVC: [
+    'tvc:*', 'dialer:*', 'submissions:*', 'projects:read', 'projects:*', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'
+  ],
+  TVC_CALLER: [
+    'tvc:*', 'dialer:*', 'submissions:*', 'projects:read', 'projects:*', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'
+  ],
+  TELE_VERIFIER: [
+    'tvc:*', 'dialer:*', 'submissions:*', 'projects:read', 'projects:*', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'
+  ],
+  TELE_CALLER: [
+    'tvc:*', 'dialer:*', 'submissions:*', 'projects:read', 'projects:*', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'
+  ],
+  TELE_AGENT: [
+    'tvc:*', 'dialer:*', 'submissions:*', 'projects:read', 'projects:*', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'
+  ],
+  CALLER: [
+    'tvc:*', 'dialer:*', 'submissions:*', 'projects:read', 'projects:*', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'
+  ],
+  VERIFIER: [
+    'tvc:*', 'dialer:*', 'submissions:*', 'projects:read', 'projects:*', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'
   ],
   CAPI_AUDITOR: [
-    'capi:*', 'exam:*', 'exams:*', 'submissions:read'
+    'capi:*', 'exam:*', 'exams:*', 'submissions:*', 'projects:read', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'
   ],
   CAPI_AGENT: [
-    'capi:*', 'exam:*', 'exams:*', 'submissions:read'
+    'capi:*', 'exam:*', 'exams:*', 'submissions:*', 'projects:read', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'
   ],
   CATI_AGENT: [
-    'field_cati:*', 'field-cati:*', 'submissions:*', 'dialer:*', 'exam:*', 'exams:*'
+    'field_cati:*', 'field-cati:*', 'submissions:*', 'dialer:*', 'exam:*', 'exams:*', 'projects:read', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'
   ],
   SUPER_AUDITOR: [
-    'super_audit:*', 'super-audit:*', 'capi:read', 'submissions:read', 'reports:read', 'audit-log:*', 'audit:*'
+    'super_audit:*', 'super-audit:*', 'capi:*', 'submissions:*', 'reports:read', 'audit-log:*', 'audit:*', 'projects:read', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'
   ],
   FA_AGENT: [
-    'feedback:*', 'fa:*', 'dialer:*', 'submissions:read'
+    'feedback:*', 'fa:*', 'dialer:*', 'submissions:*', 'projects:read', 'questionnaires:read', 'questionnaire:read', 'operations:*', 'realtime:*'
   ],
   EXAM_AGENT: [
-    'exam:*', 'exams:*'
+    'exam:*', 'exams:*', 'submissions:*', 'projects:read'
   ],
   VIEWER: [
     'reports:read', 'submissions:read', 'projects:read'
@@ -86,14 +107,15 @@ const checkRole = (...allowedRoles) => {
       return next(new AuthorizationError('Unauthorized. User not authenticated.'));
     }
 
-    const userRole = (req.user.role || req.user.roleName || req.user.role_name || '').toUpperCase().replace(/\s+/g, '_');
+    const userRole = (req.user.role || req.user.roleName || req.user.role_name || req.user.role_slug || '').toUpperCase().replace(/[\s-]+/g, '_');
+    const isMaster = userRole === 'MASTER_ADMIN' || userRole === 'MASTER_ADMINISTRATOR' || userRole === 'SUPER_ADMIN';
 
-    // MASTER_ADMIN has access to everything
-    if (userRole === 'MASTER_ADMIN' || userRole === 'MASTER_ADMINISTRATOR' || userRole === 'SUPER_ADMIN') {
+    // MASTER_ADMIN has unrestricted platform access to govern, test, and inspect all features
+    if (isMaster) {
       return next();
     }
 
-    const normalizedAllowed = new Set(allowedRoles.map((r) => r.toUpperCase().replace(/\s+/g, '_')));
+    const normalizedAllowed = new Set(allowedRoles.map((r) => r.toUpperCase().replace(/[\s-]+/g, '_')));
     if (
       normalizedAllowed.has('CLIENT_ADMIN') ||
       normalizedAllowed.has('ORG_ADMIN') ||
@@ -104,7 +126,7 @@ const checkRole = (...allowedRoles) => {
       normalizedAllowed.add('ORGANIZATION_ADMIN');
     }
 
-    if (normalizedAllowed.has(userRole)) {
+    if (normalizedAllowed.has(userRole) || normalizedAllowed.has('*')) {
       return next();
     }
 
@@ -127,15 +149,13 @@ const checkPermission = (resource, action) => {
       return next(new AuthorizationError('Unauthorized. User not authenticated.'));
     }
 
-    const userRole = (req.user.role || req.user.roleName || req.user.role_name || '').toUpperCase().replace(/\s+/g, '_');
-    if (userRole === 'MASTER_ADMIN' || userRole === 'MASTER_ADMINISTRATOR' || userRole === 'SUPER_ADMIN') {
+    const userRole = (req.user.role || req.user.roleName || req.user.role_name || req.user.role_slug || '').toUpperCase().replace(/[\s-]+/g, '_');
+    const isMaster = userRole === 'MASTER_ADMIN' || userRole === 'MASTER_ADMINISTRATOR' || userRole === 'SUPER_ADMIN';
+
+    // Master Admin has unrestricted platform access
+    if (isMaster) {
       return next();
     }
-
-    // Retrieve user permissions or fallback to role permissions map
-    let userPermissions = Array.isArray(req.user.permissions) && req.user.permissions.length > 0
-      ? req.user.permissions
-      : ROLE_PERMISSIONS_MAP[userRole] || [];
 
     const normResource = resource.toLowerCase().replace(/_/g, '-');
     const normResourceSnake = resource.toLowerCase().replace(/-/g, '_');
@@ -146,6 +166,10 @@ const checkPermission = (resource, action) => {
     const wildcardResource = `${normResource}:*`;
     const wildcardSnake = `${normResourceSnake}:*`;
     const allPermission = '*';
+
+    const rolePermissions = ROLE_PERMISSIONS_MAP[userRole] || [];
+    const directPermissions = Array.isArray(req.user.permissions) ? req.user.permissions : [];
+    const userPermissions = [...new Set([...rolePermissions, ...directPermissions])];
 
     const hasPermission = userPermissions.some((perm) => {
       if (typeof perm === 'string') {

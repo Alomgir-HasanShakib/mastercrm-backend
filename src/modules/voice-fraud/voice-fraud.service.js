@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../../config');
 const logger = require('../../utils/logger');
+const { db, withDbFallback, isDbHealthy } = require('../../database/connection');
 const mockStore = require('../../database/mockStore');
 const voiceFraudModel = require('./voice-fraud.model');
 const {
@@ -15,6 +16,8 @@ const {
   detectSelfInterviewMimicry,
   computeCosineSimilarity,
   generateDeterministicEmbedding,
+  extractSurveyorVoiceBaseline,
+  verifySurveyWholeAudioFraud,
 } = require('./voiceBiometrics.util');
 const { ValidationError, NotFoundError } = require('../../utils/errors');
 
@@ -441,6 +444,165 @@ class VoiceFraudService {
       confidenceScore: 0.96,
       message: `✓ Voice Biometric Verified: Caller audio matches ${resolvedAgentName} baseline (${(matchResult.similarityScore * 100).toFixed(1)}% match). Zero fraud detected.`,
       record: null,
+    };
+  }
+
+  /**
+   * End-to-end Surveyor Voice Biometric Capture & Anti-Fraud Verification Pipeline
+   * for both CAPI and CATI surveys when AI Audit runs.
+   *
+   * 1. Captures surveyor agent's baseline acoustic voice signature from initial call intro (0:00 - 0:15).
+   * 2. Whole-audio cross-verification against surveyor voiceprint:
+   *    - Self-Answering / Ghost Survey Fraud (>= 82% similarity)
+   *    - Multiple Agents / Handover Fraud
+   *    - Synthesized / Robotic / No Respondent Fraud
+   * 3. Tags verdict, status, and persists fraud metadata with [FRAUD_DETECTED] tag.
+   *
+   * @param {object} params
+   * @param {string} params.leadId
+   * @param {string} [params.projectId]
+   * @param {string} [params.agentId]
+   * @param {string} [params.agentName]
+   * @param {string} [params.audioUrl]
+   * @param {Buffer} [params.audioBuffer]
+   * @param {Array<object>} [params.segments]
+   * @param {string} [params.simulatedScenario]
+   * @param {object} [params.metadata]
+   * @returns {Promise<object>} Full verification report & incident record
+   */
+  async auditSurveyVoiceForensics({
+    leadId,
+    projectId,
+    agentId = 'agent_system',
+    agentName,
+    audioUrl,
+    audioBuffer,
+    segments = [],
+    simulatedScenario,
+    metadata = {},
+  }) {
+    if (!leadId) {
+      throw new ValidationError('leadId is required for survey voice forensics audit.');
+    }
+
+    // Resolve Agent Name
+    let resolvedAgentName = agentName;
+    if (!resolvedAgentName && agentId) {
+      const user = (mockStore.users || []).find((u) => String(u.id) === String(agentId));
+      if (user) {
+        resolvedAgentName = `${user.first_name || ''} ${user.last_name || ''}`.trim();
+      }
+      resolvedAgentName = resolvedAgentName || `Surveyor ${String(agentId).slice(0, 8)}`;
+    }
+    resolvedAgentName = resolvedAgentName || 'Surveyor Agent';
+
+    // 1. Initial Voice Capture & Cross-Verification
+    const fraudResult = verifySurveyWholeAudioFraud({
+      buffer: audioBuffer,
+      audioUrl,
+      leadId,
+      agentId,
+      agentName: resolvedAgentName,
+      segments,
+      simulatedScenario,
+      rawMetadata: metadata,
+    });
+
+    let record = null;
+
+    if (fraudResult.fraud_detected) {
+      logger.warn(`[Surveyor Voice Forensics] FRAUD DETECTED on lead ${leadId}: ${fraudResult.fraud_type} (${fraudResult.fraud_confidence}%)`);
+
+      // Persist fraud record
+      record = await voiceFraudModel.createFraudRecord({
+        lead_id: leadId,
+        project_id: projectId || null,
+        agent_id: agentId,
+        agent_name: resolvedAgentName,
+        fraud_type: fraudResult.fraud_type,
+        confidence_score: parseFloat((fraudResult.fraud_confidence / 100).toFixed(2)),
+        similarity_score: fraudResult.diarization?.similarityScore || null,
+        status: 'CONFIRMED_FRAUD',
+        recording_url: audioUrl || `/uploads/recordings/${leadId}_call.wav`,
+        baseline_audio_url: null,
+        details: {
+          reasons: fraudResult.fraud_reasons,
+          tags: fraudResult.fraud_tags,
+          surveyorBaseline: fraudResult.surveyorBaseline,
+          diarization: fraudResult.diarization,
+          audio_disposition: fraudResult.audio_disposition,
+          decision: fraudResult.decision,
+        },
+      });
+
+      // Persist into database campaign_leads metadata and tags
+      try {
+        if (isDbHealthy()) {
+          const leadRow = await db('campaign_leads').where('id', leadId).first().catch(() => null);
+          if (leadRow) {
+            const currentMeta = typeof leadRow.metadata === 'object' && leadRow.metadata !== null
+              ? leadRow.metadata
+              : JSON.parse(leadRow.metadata || '{}');
+
+            const currentTags = Array.isArray(leadRow.tags) ? leadRow.tags : (leadRow.tags ? [leadRow.tags] : []);
+            const updatedTags = Array.from(new Set([...currentTags, '[FRAUD_DETECTED]', fraudResult.fraud_type]));
+
+            const updatedMeta = {
+              ...currentMeta,
+              fraud_detected: true,
+              fraud_type: fraudResult.fraud_type,
+              fraud_confidence: fraudResult.fraud_confidence,
+              fraud_tags: fraudResult.fraud_tags,
+              fraud_reasons: fraudResult.fraud_reasons,
+              audio_disposition: fraudResult.audio_disposition,
+              decision: fraudResult.decision,
+            };
+
+            await db('campaign_leads')
+              .where('id', leadId)
+              .update({
+                tags: db.raw('?::text[]', [updatedTags]),
+                metadata: db.raw('?::jsonb', [JSON.stringify(updatedMeta)]),
+                updated_at: db.fn.now(),
+              })
+              .catch((e) => logger.warn('DB update campaign_leads fraud tags warning:', e.message));
+          }
+        }
+      } catch (dbErr) {
+        logger.warn('Failed to tag campaign_leads with fraud metadata:', dbErr.message);
+      }
+
+      // In-memory mockStore tagging fallback
+      if (mockStore.campaign_leads) {
+        const mockLead = mockStore.campaign_leads.find((l) => String(l.id) === String(leadId));
+        if (mockLead) {
+          mockLead.tags = Array.from(new Set([...(mockLead.tags || []), '[FRAUD_DETECTED]', fraudResult.fraud_type]));
+          mockLead.metadata = {
+            ...(mockLead.metadata || {}),
+            fraud_detected: true,
+            fraud_type: fraudResult.fraud_type,
+            fraud_confidence: fraudResult.fraud_confidence,
+            fraud_tags: fraudResult.fraud_tags,
+            fraud_reasons: fraudResult.fraud_reasons,
+            audio_disposition: fraudResult.audio_disposition,
+            decision: fraudResult.decision,
+          };
+        }
+      }
+    }
+
+    return {
+      passed: !fraudResult.fraud_detected,
+      fraud_detected: fraudResult.fraud_detected,
+      fraud_type: fraudResult.fraud_type,
+      fraud_confidence: fraudResult.fraud_confidence,
+      fraud_tags: fraudResult.fraud_tags,
+      fraud_reasons: fraudResult.fraud_reasons,
+      audio_disposition: fraudResult.audio_disposition,
+      decision: fraudResult.decision,
+      surveyorBaseline: fraudResult.surveyorBaseline,
+      diarization: fraudResult.diarization,
+      record,
     };
   }
 

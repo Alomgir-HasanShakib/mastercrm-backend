@@ -159,7 +159,7 @@ describe('Organization Module Entitlement & Access Control Suite', () => {
       expect(res.body.error.message).toContain('Module not enabled for your organization');
     });
 
-    it('Master Admin should bypass module gate even when module is disabled in organization context', async () => {
+    it('Master Admin should be restricted from operational survey routes (like TVC)', async () => {
       // Disable TVC
       await request(app)
         .put('/api/v1/organizations/11111111-1111-1111-1111-111111111111/modules')
@@ -170,8 +170,8 @@ describe('Organization Module Entitlement & Access Control Suite', () => {
         .get('/api/v1/tvc/metrics')
         .set('Authorization', `Bearer ${masterAdminToken}`);
 
-      // Master Admin is bypassed
-      expect(res.status).not.toBe(403);
+      // Master Admin is restricted from survey operations
+      expect(res.status).toBe(403);
     });
   });
 
@@ -190,6 +190,139 @@ describe('Organization Module Entitlement & Access Control Suite', () => {
       expect(res.body.success).toBe(true);
       expect(res.body.data.enabled_modules).toBeDefined();
       expect(res.body.data.enabled_modules).toEqual(expect.arrayContaining(['CAPI', 'CATI', 'TVC']));
+    });
+  });
+
+  describe('4. Subscription Service Pricing Defaults & AI_AUDIT Entitlement Sync', () => {
+    const subscriptionService = require('../modules/subscriptions/subscription.service');
+    const { requireModuleEnabled } = require('../middlewares/organizationModuleEntitlement.middleware');
+
+    it('Pricing configuration should default to 10 BDT per seat and 50 BDT per AI audit license', async () => {
+      const pricing = await subscriptionService.getPricingConfig();
+      expect(pricing.basePrice).toBe(10);
+      expect(pricing.aiAuditPrice).toBe(50);
+      expect(pricing.currency).toBe('BDT');
+    });
+
+    it('Provisioning subscription with AI Audit (hasAiAudit: true, aiLicense: 5) should auto-enable AI_AUDIT in enabled_modules and enable_ai_audit: true', async () => {
+      const orgId = '11111111-1111-1111-1111-111111111111';
+      const result = await subscriptionService.createOrRenewSubscription(
+        {
+          organizationId: orgId,
+          planName: 'GROWTH_TIER',
+          billingCycle: 'MONTHLY',
+          userLicense: 20,
+          aiLicense: 5,
+          hasAiAudit: true,
+        },
+        { isMasterAdmin: true, organizationId: orgId }
+      );
+
+      expect(result).toBeDefined();
+      const org = mockStore.findById('organizations', orgId);
+      expect(org.enable_ai_audit).toBe(true);
+      expect(org.enabled_modules).toContain('AI_AUDIT');
+    });
+
+    it('Provisioning subscription without AI Audit (aiLicense: 0, hasAiAudit: false) should remove AI_AUDIT from enabled_modules and set enable_ai_audit: false', async () => {
+      const orgId = '11111111-1111-1111-1111-111111111111';
+      const result = await subscriptionService.createOrRenewSubscription(
+        {
+          organizationId: orgId,
+          planName: 'BASIC_TIER',
+          billingCycle: 'MONTHLY',
+          userLicense: 10,
+          aiLicense: 0,
+          hasAiAudit: false,
+        },
+        { isMasterAdmin: true, organizationId: orgId }
+      );
+
+      expect(result).toBeDefined();
+      const org = mockStore.findById('organizations', orgId);
+      expect(org.enable_ai_audit).toBe(false);
+      expect(org.enabled_modules).not.toContain('AI_AUDIT');
+      expect(org.enabled_modules).not.toContain('AI_AUDIT_QC');
+    });
+
+    it('Middleware organizationModuleEntitlement("AI_AUDIT") should permit access when enable_ai_audit is true', async () => {
+      const orgId = '11111111-1111-1111-1111-111111111111';
+      mockStore.update('organizations', orgId, {
+        enable_ai_audit: true,
+        enabled_modules: ['CAPI', 'CATI'],
+      });
+
+      const middleware = requireModuleEnabled('AI_AUDIT');
+      let calledNext = false;
+      let errPassed = null;
+      const req = {
+        user: {
+          id: '66666666-6666-6666-6666-666666666602',
+          role: 'ORGANIZATION_ADMIN',
+          organizationId: orgId,
+        },
+      };
+      const res = {};
+      await middleware(req, res, (err) => {
+        calledNext = true;
+        errPassed = err;
+      });
+
+      expect(calledNext).toBe(true);
+      expect(errPassed).toBeUndefined();
+    });
+
+    it('Middleware organizationModuleEntitlement("AI_AUDIT") should permit access when enabled_modules includes AI_AUDIT', async () => {
+      const orgId = '11111111-1111-1111-1111-111111111111';
+      mockStore.update('organizations', orgId, {
+        enable_ai_audit: false,
+        enabled_modules: ['CAPI', 'CATI', 'AI_AUDIT'],
+      });
+
+      const middleware = requireModuleEnabled('AI_AUDIT');
+      let calledNext = false;
+      let errPassed = null;
+      const req = {
+        user: {
+          id: '66666666-6666-6666-6666-666666666602',
+          role: 'ORGANIZATION_ADMIN',
+          organizationId: orgId,
+        },
+      };
+      const res = {};
+      await middleware(req, res, (err) => {
+        calledNext = true;
+        errPassed = err;
+      });
+
+      expect(calledNext).toBe(true);
+      expect(errPassed).toBeUndefined();
+    });
+
+    it('Middleware organizationModuleEntitlement("AI_AUDIT") should reject access when neither flag nor module list contains AI_AUDIT', async () => {
+      const orgId = '11111111-1111-1111-1111-111111111111';
+      mockStore.update('organizations', orgId, {
+        enable_ai_audit: false,
+        enabled_modules: ['CAPI', 'CATI'],
+      });
+
+      const middleware = requireModuleEnabled('AI_AUDIT');
+      let errPassed = null;
+      const req = {
+        user: {
+          id: '66666666-6666-6666-6666-666666666602',
+          role: 'ORGANIZATION_ADMIN',
+          organizationId: orgId,
+        },
+      };
+      const res = {};
+      await middleware(req, res, (err) => {
+        errPassed = err;
+      });
+
+      expect(errPassed).toBeDefined();
+      expect(errPassed.statusCode).toBe(403);
+      expect(errPassed.code).toBe('MODULE_NOT_ENABLED');
     });
   });
 

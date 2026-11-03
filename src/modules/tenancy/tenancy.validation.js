@@ -64,7 +64,8 @@ const createOrganizationSchema = Joi.object({
   voiceAiLicenses: Joi.number().integer().optional(),
   validityStart: Joi.string().allow(null, '').optional(),
   validityEnd: Joi.string().allow(null, '').optional(),
-  enableAiAudit: Joi.boolean().default(true).optional(),
+  enableAiAudit: Joi.boolean().optional(),
+  enable_ai_audit: Joi.boolean().optional(),
   enabled_modules: Joi.array().items(Joi.string().trim()).optional(),
   enabledModules: Joi.array().items(Joi.string().trim()).optional(),
   settings: Joi.object().default({}),
@@ -96,6 +97,8 @@ const updateOrganizationModulesSchema = Joi.object({
   enabled_modules: Joi.array().items(Joi.string().trim()).optional(),
   enabledModules: Joi.array().items(Joi.string().trim()).optional(),
   modules: Joi.array().items(Joi.string().trim()).optional(),
+  enable_ai_audit: Joi.boolean().optional(),
+  enableAiAudit: Joi.boolean().optional(),
 }).or('enabled_modules', 'enabledModules', 'modules').unknown(true);
 
 

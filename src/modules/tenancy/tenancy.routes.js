@@ -154,14 +154,14 @@ router.get(
 
 router.post(
   '/vendors',
-  checkRole('MASTER_ADMIN', 'CLIENT_ADMIN'),
+  checkRole('MASTER_ADMIN', 'ORGANIZATION_ADMIN', 'CLIENT_ADMIN', 'ORG_ADMIN'),
   validate(createVendorSchema, 'body'),
   tenancyController.createVendor
 );
 
 router.put(
   '/vendors/:id',
-  checkRole('MASTER_ADMIN', 'CLIENT_ADMIN'),
+  checkRole('MASTER_ADMIN', 'ORGANIZATION_ADMIN', 'CLIENT_ADMIN', 'ORG_ADMIN'),
   validate(idParamSchema, 'params'),
   validate(updateVendorSchema, 'body'),
   tenancyController.updateVendor
@@ -169,14 +169,14 @@ router.put(
 
 router.delete(
   '/vendors/:id',
-  checkRole('MASTER_ADMIN', 'CLIENT_ADMIN'),
+  checkRole('MASTER_ADMIN', 'ORGANIZATION_ADMIN', 'CLIENT_ADMIN', 'ORG_ADMIN'),
   validate(idParamSchema, 'params'),
   tenancyController.deleteVendor
 );
 
 router.patch(
   '/vendors/:id/status',
-  checkRole('MASTER_ADMIN', 'CLIENT_ADMIN'),
+  checkRole('MASTER_ADMIN', 'ORGANIZATION_ADMIN', 'CLIENT_ADMIN', 'ORG_ADMIN'),
   validate(idParamSchema, 'params'),
   validate(toggleStatusSchema, 'body'),
   tenancyController.toggleVendorStatus
