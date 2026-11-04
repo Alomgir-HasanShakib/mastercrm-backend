@@ -3506,6 +3506,124 @@ const mockStore = {
   },
 
   /**
+   * Super Admin distributes campaign leads to Organizations in mockStore.
+   */
+  distributeLeadsToOrganizations(projectId, payload = {}) {
+    const {
+      module = 'CAPI',
+      method = 'EQUAL_SPLIT',
+      organizationIds = [],
+      organizationId = null,
+      count = null,
+      distributions = [],
+      reallocateAll = false,
+    } = payload;
+
+    const orgs = store.organizations || [];
+    let targetOrgIds = [];
+    if (method === 'SINGLE' && organizationId) {
+      targetOrgIds = [organizationId];
+    } else if (Array.isArray(organizationIds) && organizationIds.length > 0) {
+      targetOrgIds = organizationIds;
+    } else if (Array.isArray(distributions) && distributions.length > 0) {
+      targetOrgIds = [...new Set(distributions.map((d) => d.organizationId).filter(Boolean))];
+    }
+
+    const matchedOrgs = orgs.filter((o) => targetOrgIds.includes(o.id));
+    let candidateLeads = (store.campaign_leads || []).filter((l) => l.project_id === projectId);
+    if (!reallocateAll) {
+      candidateLeads = candidateLeads.filter((l) => !l.organization_id);
+    }
+
+    const totalAvailable = candidateLeads.length;
+    let distributedCount = 0;
+    const organizationResults = [];
+
+    if (matchedOrgs.length > 0 && totalAvailable > 0) {
+      const takeTotal = count ? Math.min(Number(count), totalAvailable) : totalAvailable;
+      const perOrg = Math.floor(takeTotal / matchedOrgs.length);
+      let remainder = takeTotal % matchedOrgs.length;
+      let leadIdx = 0;
+
+      for (const org of matchedOrgs) {
+        const take = perOrg + (remainder > 0 ? 1 : 0);
+        if (remainder > 0) remainder--;
+        const slice = candidateLeads.slice(leadIdx, leadIdx + take);
+        leadIdx += take;
+
+        slice.forEach((l) => {
+          l.organization_id = org.id;
+          if (l.status !== 'COMPLETED') l.status = 'ASSIGNED';
+          l.allocated_at = new Date().toISOString();
+        });
+
+        distributedCount += slice.length;
+        organizationResults.push({
+          organizationId: org.id,
+          organizationName: org.name,
+          organizationCode: org.code || org.slug,
+          allocatedCount: slice.length,
+        });
+      }
+    }
+
+    const remainingUnallocated = (store.campaign_leads || []).filter(
+      (l) => l.project_id === projectId && !l.organization_id
+    ).length;
+
+    return {
+      projectId,
+      module: String(module).toUpperCase(),
+      totalDistributed: distributedCount,
+      remainingUnallocated,
+      organizationResults,
+      message: `Successfully distributed ${distributedCount} leads across ${organizationResults.length} organization(s).`,
+    };
+  },
+
+  /**
+   * Get organization lead distribution summary in mockStore.
+   */
+  getOrganizationDistribution(projectId) {
+    const project = (store.projects || []).find((p) => p.id === projectId) || {};
+    const leads = (store.campaign_leads || []).filter((l) => l.project_id === projectId);
+    const orgs = store.organizations || [];
+
+    const totalLeads = leads.length;
+    const unallocatedLeads = leads.filter((l) => !l.organization_id).length;
+
+    const organizations = orgs.map((org) => {
+      const orgLeads = leads.filter((l) => l.organization_id === org.id);
+      const total = orgLeads.length;
+      const completed = orgLeads.filter((l) => l.status === 'COMPLETED').length;
+      const inProgress = orgLeads.filter((l) => l.status === 'IN_PROGRESS').length;
+      const pending = orgLeads.filter((l) => ['PENDING', 'ASSIGNED'].includes(l.status)).length;
+      const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+      return {
+        id: org.id,
+        name: org.name,
+        code: org.code || org.slug || '—',
+        totalAllocated: total,
+        pendingLeads: pending,
+        inProgressLeads: inProgress,
+        completedLeads: completed,
+        completionPercent: percent,
+      };
+    });
+
+    return {
+      projectId,
+      projectName: project.name || 'Campaign',
+      projectCode: project.project_code || project.code || 'CMP',
+      totalLeads,
+      unallocatedLeads,
+      allocatedLeads: totalLeads - unallocatedLeads,
+      organizations,
+    };
+  },
+
+  /**
    * Auto-assign any remaining leads in the campaign pending pool across active vendors.
    */
   autoAssignPendingLeads(projectId) {

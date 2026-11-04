@@ -121,6 +121,20 @@ async function ensureDatabaseSchema() {
       `);
     } catch (_) {}
 
+    // Ensure campaign_leads has organization_id column for Super Admin distribution
+    try {
+      const hasLeadsTable = await db.schema.hasTable('campaign_leads');
+      if (hasLeadsTable) {
+        const hasOrgCol = await db.schema.hasColumn('campaign_leads', 'organization_id');
+        if (!hasOrgCol) {
+          await db.schema.alterTable('campaign_leads', (table) => {
+            table.uuid('organization_id').nullable();
+            table.index(['organization_id']);
+          });
+        }
+      }
+    } catch (_) {}
+
     // Ensure ORGANIZATION_ADMIN role exists and fix any users incorrectly marked as CLIENT_ADMIN
     const hasRolesTable = await db.schema.hasTable('roles');
     if (hasRolesTable) {

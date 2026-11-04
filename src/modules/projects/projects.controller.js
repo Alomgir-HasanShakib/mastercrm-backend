@@ -508,6 +508,50 @@ class ProjectsController {
       return next(err);
     }
   }
+
+  /**
+   * Super Admin distributes CAPI/CATI campaign leads to specific Organizations.
+   * Route: POST /api/v1/projects/:id/distribute-to-organizations
+   */
+  async distributeToOrganizations(req, res, next) {
+    try {
+      const result = await projectsService.distributeLeadsToOrganizations(
+        req.params.id,
+        req.body,
+        req.tenantContext
+      );
+
+      logOperation({
+        req,
+        action: 'DISTRIBUTE_LEADS_TO_ORGANIZATIONS',
+        module: 'PROJECTS',
+        entityType: 'projects',
+        entityId: req.params.id,
+        newValues: req.body,
+        metadata: { message: result.message, totalDistributed: result.totalDistributed },
+      });
+
+      return success(res, result, result.message);
+    } catch (err) {
+      return next(err);
+    }
+  }
+
+  /**
+   * Get CAPI/CATI lead distribution breakdown across all Organizations for a Campaign.
+   * Route: GET /api/v1/projects/:id/organization-distribution
+   */
+  async getOrganizationDistribution(req, res, next) {
+    try {
+      const distribution = await projectsService.getOrganizationDistribution(
+        req.params.id,
+        req.tenantContext
+      );
+      return success(res, distribution, 'Organization distribution retrieved successfully');
+    } catch (err) {
+      return next(err);
+    }
+  }
 }
 
 module.exports = new ProjectsController();

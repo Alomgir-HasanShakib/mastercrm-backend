@@ -128,6 +128,20 @@ router.post(
   projectsController.assignProjectCode
 );
 
+// ==========================================
+// SUPER ADMIN CAPI & CATI ORGANIZATION DISTRIBUTION
+// ==========================================
+router.post(
+  '/:id/distribute-to-organizations',
+  checkRole('MASTER_ADMIN', 'SUPER_ADMIN'),
+  projectsController.distributeToOrganizations
+);
+
+router.get(
+  '/:id/organization-distribution',
+  projectsController.getOrganizationDistribution
+);
+
 // Equal split lead allocation (e.g. 65 leads across 5 vendors -> 13 each)
 router.post(
   '/:id/leads/allocate',

@@ -941,6 +941,9 @@ class ProjectsService {
           .andWhere('assigned_agent_id', currentUserId)
           .andWhere('status', 'IN_PROGRESS');
         if (ac && ac !== 'ALL') query = query.andWhere('constituency', ac);
+        if (!tenantContext.isMasterAdmin && tenantContext.organizationId) {
+          query = query.andWhere('campaign_leads.organization_id', tenantContext.organizationId);
+        }
         const existing = await query.first();
         if (existing) return existing;
 
@@ -952,6 +955,9 @@ class ProjectsService {
             this.whereNull('assigned_agent_id').orWhere('assigned_agent_id', currentUserId);
           });
         if (ac && ac !== 'ALL') candidateQuery = candidateQuery.andWhere('constituency', ac);
+        if (!tenantContext.isMasterAdmin && tenantContext.organizationId) {
+          candidateQuery = candidateQuery.andWhere('campaign_leads.organization_id', tenantContext.organizationId);
+        }
 
         const candidate = await candidateQuery.orderBy('created_at', 'asc').first();
         if (!candidate) return null;
@@ -1001,6 +1007,11 @@ class ProjectsService {
             'vendors.code as vendor_code'
           )
           .where('campaign_leads.project_id', projectId);
+
+        // Strict Organization Scoping (Non-Master Admin users only see their Organization's leads)
+        if (!effectiveContext.isMasterAdmin && effectiveContext.organizationId) {
+          query = query.where('campaign_leads.organization_id', effectiveContext.organizationId);
+        }
 
         const isVendorUser = Boolean(
           effectiveContext.vendorId ||
@@ -1082,6 +1093,13 @@ class ProjectsService {
         const lead = await db('campaign_leads').where('id', leadId).first();
         if (!lead) {
           return mockStore.surveyCampaignLead(leadId, tenantContext, surveyData);
+        }
+
+        // Strict Organization Scoping:
+        if (!tenantContext.isMasterAdmin && tenantContext.organizationId) {
+          if (lead.organization_id && String(lead.organization_id) !== String(tenantContext.organizationId)) {
+            throw new AuthorizationError('Organization Isolation: You can only survey leads distributed to your organization.');
+          }
         }
 
         const isVendorUser = Boolean(
@@ -1764,6 +1782,291 @@ class ProjectsService {
         });
       },
       () => mockStore.rechainCampaignLeads(projectId, { date, vendorId })
+    );
+  }
+
+  /**
+   * Super Admin distributes CAPI/CATI campaign data (leads/targets) to specific Organizations.
+   * Organization agents can then survey strictly the leads distributed to their Organization.
+   *
+   * @param {string} projectId
+   * @param {object} payload - { module: 'CAPI'|'CATI', method: 'EQUAL_SPLIT'|'SINGLE'|'CUSTOM', organizationIds, organizationId, count, distributions, reallocateAll, ac, projectCode }
+   * @param {object} tenantContext
+   */
+  async distributeLeadsToOrganizations(projectId, payload = {}, tenantContext = {}) {
+    const isMasterAdmin = tenantContext.isMasterAdmin ||
+      tenantContext.role === 'MASTER_ADMIN' ||
+      tenantContext.role === 'Master Administrator' ||
+      tenantContext.role === 'SUPER_ADMIN';
+
+    if (!isMasterAdmin) {
+      throw new AuthorizationError('Only Super Admin / Master Admin can distribute CAPI/CATI campaign data to Organizations.');
+    }
+
+    const {
+      module = 'CAPI',
+      method = 'EQUAL_SPLIT',
+      organizationIds = [],
+      organizationId = null,
+      count = null,
+      distributions = [],
+      reallocateAll = false,
+      ac = null,
+      projectCode = null,
+    } = payload;
+
+    return withDbFallback(
+      async () => {
+        const project = await db('projects').where('id', projectId).first();
+        if (!project) {
+          throw new NotFoundError(`Campaign/Project with ID '${projectId}' not found.`);
+        }
+
+        const modUpper = String(module || 'CAPI').toUpperCase();
+        let enabledModules = [];
+        try {
+          enabledModules = typeof project.enabled_modules === 'string'
+            ? JSON.parse(project.enabled_modules)
+            : (project.enabled_modules || []);
+        } catch (_) {}
+
+        if (!enabledModules.includes(modUpper)) {
+          enabledModules.push(modUpper);
+          await db('projects').where('id', projectId).update({
+            enabled_modules: JSON.stringify(enabledModules),
+            updated_at: new Date(),
+          });
+        }
+
+        let targetOrgIds = [];
+        if (method === 'SINGLE' && organizationId) {
+          targetOrgIds = [organizationId];
+        } else if (Array.isArray(organizationIds) && organizationIds.length > 0) {
+          targetOrgIds = organizationIds;
+        } else if (Array.isArray(distributions) && distributions.length > 0) {
+          targetOrgIds = [...new Set(distributions.map((d) => d.organizationId).filter(Boolean))];
+        }
+
+        if (targetOrgIds.length === 0) {
+          throw new ValidationError('At least one target Organization must be selected for distribution.');
+        }
+
+        const orgs = await db('organizations').whereIn('id', targetOrgIds);
+        if (orgs.length === 0) {
+          throw new NotFoundError('Selected organizations were not found.');
+        }
+
+        // Auto-enable CAPI/CATI module on target organizations
+        for (const org of orgs) {
+          let orgModules = [];
+          try {
+            orgModules = typeof org.enabled_modules === 'string'
+              ? JSON.parse(org.enabled_modules)
+              : (org.enabled_modules || []);
+          } catch (_) {}
+          if (!orgModules.includes(modUpper)) {
+            orgModules.push(modUpper);
+            await db('organizations').where('id', org.id).update({
+              enabled_modules: JSON.stringify(orgModules),
+              updated_at: new Date(),
+            });
+          }
+        }
+
+        let leadQuery = db('campaign_leads').where('project_id', projectId);
+        if (!reallocateAll) {
+          leadQuery = leadQuery.whereNull('organization_id');
+        }
+        if (ac && ac !== 'ALL') {
+          leadQuery = leadQuery.where((b) => {
+            b.where('constituency', ac).orWhere('ac_name', ac);
+          });
+        }
+        if (projectCode) {
+          leadQuery = leadQuery.where('project_code', projectCode);
+        }
+
+        const candidateLeads = await leadQuery.orderBy('created_at', 'asc');
+        const totalAvailable = candidateLeads.length;
+
+        if (totalAvailable === 0) {
+          return {
+            projectId,
+            module: modUpper,
+            totalDistributed: 0,
+            availableLeads: 0,
+            message: 'No unallocated leads found for distribution in this campaign. Check "Reallocate All" to re-distribute existing leads.',
+            organizationResults: orgs.map((o) => ({
+              organizationId: o.id,
+              organizationName: o.name,
+              organizationCode: o.code || o.slug,
+              allocatedCount: 0,
+            })),
+          };
+        }
+
+        const orgAllocationPlan = [];
+        if (method === 'CUSTOM' && distributions.length > 0) {
+          let leadIndex = 0;
+          for (const dist of distributions) {
+            const org = orgs.find((o) => o.id === dist.organizationId);
+            if (!org) continue;
+            const requestedCount = Math.min(Number(dist.count) || 0, totalAvailable - leadIndex);
+            if (requestedCount > 0) {
+              const leadIdsSlice = candidateLeads.slice(leadIndex, leadIndex + requestedCount).map((l) => l.id);
+              leadIndex += requestedCount;
+              orgAllocationPlan.push({ org, leadIds: leadIdsSlice });
+            }
+          }
+        } else if (method === 'SINGLE' || targetOrgIds.length === 1) {
+          const org = orgs[0];
+          const maxToTake = count ? Math.min(Number(count), totalAvailable) : totalAvailable;
+          const leadIdsSlice = candidateLeads.slice(0, maxToTake).map((l) => l.id);
+          orgAllocationPlan.push({ org, leadIds: leadIdsSlice });
+        } else {
+          // EQUAL_SPLIT
+          const totalToDistribute = count ? Math.min(Number(count), totalAvailable) : totalAvailable;
+          const basePerOrg = Math.floor(totalToDistribute / orgs.length);
+          let remainder = totalToDistribute % orgs.length;
+          let leadIndex = 0;
+
+          for (const org of orgs) {
+            const take = basePerOrg + (remainder > 0 ? 1 : 0);
+            if (remainder > 0) remainder--;
+            const leadIdsSlice = candidateLeads.slice(leadIndex, leadIndex + take).map((l) => l.id);
+            leadIndex += take;
+            orgAllocationPlan.push({ org, leadIds: leadIdsSlice });
+          }
+        }
+
+        let grandTotalDistributed = 0;
+        const organizationResults = [];
+
+        await db.transaction(async (trx) => {
+          for (const plan of orgAllocationPlan) {
+            if (plan.leadIds.length > 0) {
+              await trx('campaign_leads')
+                .whereIn('id', plan.leadIds)
+                .update({
+                  organization_id: plan.org.id,
+                  status: trx.raw("CASE WHEN status = 'COMPLETED' THEN 'COMPLETED' ELSE 'ASSIGNED' END"),
+                  allocated_at: new Date(),
+                  updated_at: new Date(),
+                });
+              grandTotalDistributed += plan.leadIds.length;
+            }
+
+            organizationResults.push({
+              organizationId: plan.org.id,
+              organizationName: plan.org.name,
+              organizationCode: plan.org.code || plan.org.slug,
+              allocatedCount: plan.leadIds.length,
+            });
+          }
+        });
+
+        const remainingCountRes = await db('campaign_leads')
+          .where('project_id', projectId)
+          .whereNull('organization_id')
+          .count('* as count')
+          .first();
+
+        const remainingUnallocated = parseInt(remainingCountRes?.count || 0, 10);
+
+        return {
+          projectId,
+          module: modUpper,
+          totalDistributed: grandTotalDistributed,
+          remainingUnallocated,
+          organizationResults,
+          message: `Successfully distributed ${grandTotalDistributed} ${modUpper} leads across ${organizationResults.length} organization(s).`,
+        };
+      },
+      () => mockStore.distributeLeadsToOrganizations(projectId, payload, tenantContext)
+    );
+  }
+
+  /**
+   * Get CAPI/CATI lead distribution breakdown across all Organizations for a Campaign.
+   */
+  async getOrganizationDistribution(projectId, tenantContext = {}) {
+    await tenancyService.getProjectById(projectId, tenantContext);
+
+    return withDbFallback(
+      async () => {
+        const project = await db('projects').where('id', projectId).first();
+        if (!project) throw new NotFoundError('Project not found');
+
+        const totalLeadsRes = await db('campaign_leads')
+          .where('project_id', projectId)
+          .count('* as count')
+          .first();
+        const totalLeads = parseInt(totalLeadsRes?.count || 0, 10);
+
+        const unallocatedRes = await db('campaign_leads')
+          .where('project_id', projectId)
+          .whereNull('organization_id')
+          .count('* as count')
+          .first();
+        const unallocatedLeads = parseInt(unallocatedRes?.count || 0, 10);
+
+        const orgStats = await db('campaign_leads')
+          .where('campaign_leads.project_id', projectId)
+          .whereNotNull('campaign_leads.organization_id')
+          .leftJoin('organizations', 'campaign_leads.organization_id', 'organizations.id')
+          .groupBy('campaign_leads.organization_id', 'organizations.name', 'organizations.code', 'organizations.slug')
+          .select(
+            'campaign_leads.organization_id',
+            'organizations.name as organization_name',
+            'organizations.code as organization_code',
+            'organizations.slug as organization_slug',
+            db.raw('count(*) as total_allocated'),
+            db.raw("count(case when campaign_leads.status in ('PENDING', 'ASSIGNED') then 1 end) as pending_leads"),
+            db.raw("count(case when campaign_leads.status = 'IN_PROGRESS' then 1 end) as in_progress_leads"),
+            db.raw("count(case when campaign_leads.status = 'COMPLETED' then 1 end) as completed_leads")
+          );
+
+        let allOrgs = await db('organizations').where({ is_active: true }).select('id', 'name', 'code', 'slug');
+        if (allOrgs.length === 0) {
+          allOrgs = await db('organizations').select('id', 'name', 'code', 'slug');
+        }
+
+        const statsMap = {};
+        for (const stat of orgStats) {
+          statsMap[stat.organization_id] = stat;
+        }
+
+        const organizations = allOrgs.map((org) => {
+          const s = statsMap[org.id];
+          const total = s ? parseInt(s.total_allocated || 0, 10) : 0;
+          const completed = s ? parseInt(s.completed_leads || 0, 10) : 0;
+          const inProgress = s ? parseInt(s.in_progress_leads || 0, 10) : 0;
+          const pending = s ? parseInt(s.pending_leads || 0, 10) : 0;
+          const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+          return {
+            id: org.id,
+            name: org.name,
+            code: org.code || org.slug || '—',
+            totalAllocated: total,
+            pendingLeads: pending,
+            inProgressLeads: inProgress,
+            completedLeads: completed,
+            completionPercent: percent,
+          };
+        });
+
+        return {
+          projectId,
+          projectName: project.name,
+          projectCode: project.project_code,
+          totalLeads,
+          unallocatedLeads,
+          allocatedLeads: totalLeads - unallocatedLeads,
+          organizations,
+        };
+      },
+      () => mockStore.getOrganizationDistribution(projectId, tenantContext)
     );
   }
 }
