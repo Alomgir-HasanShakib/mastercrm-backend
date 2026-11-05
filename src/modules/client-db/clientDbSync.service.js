@@ -1154,7 +1154,10 @@ const saveActiveConfig = async (data = {}, tenantContext = {}) => {
 const pullCampaignData = async (params = {}, tenantContext = {}) => {
   const startTime = Date.now();
   const pId = params.projectId || params.campaignId;
-  const requestedLimit = parseInt(params.limit, 10) || 500;
+  const requestedLimit = params.limit !== undefined && params.limit !== null && params.limit !== '' && params.limit !== 'all' && params.limit !== 'ALL' && parseInt(params.limit, 10) > 0
+    ? parseInt(params.limit, 10)
+    : null;
+  const limitClause = requestedLimit ? `LIMIT ${requestedLimit}` : '';
 
   return withDbFallback(
     async () => {
@@ -1231,7 +1234,7 @@ const pullCampaignData = async (params = {}, tenantContext = {}) => {
             try {
               const queryStr = params.sqlQuery && !/drop|delete|truncate|alter/i.test(params.sqlQuery)
                 ? params.sqlQuery
-                : `SELECT * FROM "${targetTable}" LIMIT ${requestedLimit}`;
+                : `SELECT * FROM "${targetTable}" ${limitClause}`.trim();
               const res = await client.query(queryStr);
               fetchedRows = res.rows || [];
             } finally {
@@ -1251,7 +1254,7 @@ const pullCampaignData = async (params = {}, tenantContext = {}) => {
             try {
               const queryStr = params.sqlQuery && !/drop|delete|truncate|alter/i.test(params.sqlQuery)
                 ? params.sqlQuery
-                : `SELECT * FROM \`${targetTable}\` LIMIT ${requestedLimit}`;
+                : `SELECT * FROM \`${targetTable}\` ${limitClause}`.trim();
               const [rows] = await conn.query(queryStr);
               fetchedRows = Array.isArray(rows) ? rows : [];
             } finally {
@@ -1273,9 +1276,11 @@ const pullCampaignData = async (params = {}, tenantContext = {}) => {
       const now = new Date();
 
       // Pre-fetch existing keys in bulk to eliminate N+1 roundtrips
-      const existingDumpIds = new Set((await db('raw_survey_dumps').select('submission_id')).map((r) => r.submission_id));
-      const existingSubIds = pId ? new Set((await db('submissions').where('project_id', pId).select('submission_id')).map((r) => r.submission_id)) : new Set();
-      const existingPhones = pId ? new Set((await db('campaign_leads').where('project_id', pId).select('phone_number')).map((r) => r.phone_number)) : new Set();
+      const existingDumpIds = new Set((await db('raw_survey_dumps').select('submission_id')).map((r) => String(r.submission_id).trim()));
+      const existingSubIds = pId ? new Set((await db('submissions').where('project_id', pId).select('submission_id')).map((r) => String(r.submission_id).trim())) : new Set();
+      const existingLeadSubs = pId ? new Set((await db('campaign_leads').where('project_id', pId).select('external_id')).map((r) => String(r.external_id).trim()).filter(Boolean)) : new Set();
+      const existingPhones = pId ? new Set((await db('campaign_leads').where('project_id', pId).select('phone_number')).map((r) => String(r.phone_number).trim())) : new Set();
+      const existingSyncedRecords = pId ? new Set((await db('campaign_synced_records').where('project_id', pId).select('external_id').catch(() => [])).map((r) => String(r.external_id).trim()).filter(Boolean)) : new Set();
 
       const dumpsToInsert = [];
       const subsToInsert = [];
@@ -1364,11 +1369,30 @@ const pullCampaignData = async (params = {}, tenantContext = {}) => {
         }
 
         if (pId) {
-          if (!existingSubIds.has(submissionId)) {
-            existingSubIds.add(submissionId);
+          const strSubId = String(submissionId).trim();
+          const strPhone = String(phone).trim();
+
+          // Strict Deduplication: Do not re-pull leads that already exist in this campaign or have been synced
+          if (
+            (strSubId && (existingLeadSubs.has(strSubId) || existingSyncedRecords.has(strSubId))) ||
+            (strPhone && existingPhones.has(strPhone))
+          ) {
+            continue;
+          }
+
+          if (strSubId) {
+            existingLeadSubs.add(strSubId);
+            existingSyncedRecords.add(strSubId);
+          }
+          if (strPhone) {
+            existingPhones.add(strPhone);
+          }
+
+          if (!existingSubIds.has(strSubId)) {
+            existingSubIds.add(strSubId);
             subsToInsert.push({
               id: uuidv4(),
-              submission_id: submissionId,
+              submission_id: strSubId,
               project_id: pId,
               source_channel: sourceChannel,
               source_status: 'SUBMITTED',
@@ -1377,7 +1401,7 @@ const pullCampaignData = async (params = {}, tenantContext = {}) => {
               tvc_status: tvcStatus,
               fa_status: faStatus,
               respondent_name: respondentName,
-              respondent_phone: phone,
+              respondent_phone: strPhone,
               priority: 50,
               risk_score: 0.00,
               created_at: now,
@@ -1385,32 +1409,30 @@ const pullCampaignData = async (params = {}, tenantContext = {}) => {
             });
           }
 
-          if (!existingPhones.has(phone)) {
-            existingPhones.add(phone);
-            const rawProjectCode = row.project_code || row.projectCode || row.project || row.code || project?.project_code || 'DEFAULT';
-            const projectCode = String(rawProjectCode).trim();
-            leadsToInsert.push({
-              id: uuidv4(),
-              project_id: pId,
+          const rawProjectCode = row.project_code || row.projectCode || row.project || row.code || project?.project_code || 'DEFAULT';
+          const projectCode = String(rawProjectCode).trim();
+          leadsToInsert.push({
+            id: uuidv4(),
+            project_id: pId,
+            project_code: projectCode,
+            external_id: strSubId,
+            phone_number: strPhone,
+            respondent_name: respondentName,
+            state: row.state || 'Maharashtra',
+            constituency: acName,
+            status: 'PENDING',
+            priority: 50,
+            attempt_count: 0,
+            metadata: JSON.stringify({
+              ...row,
               project_code: projectCode,
-              phone_number: phone,
-              respondent_name: respondentName,
-              state: row.state || 'Maharashtra',
-              constituency: acName,
-              status: 'PENDING',
-              priority: 50,
-              attempt_count: 0,
-              metadata: JSON.stringify({
-                ...row,
-                project_code: projectCode,
-                source_table: targetTable,
-                submission_id: submissionId,
-                pulled_at: now,
-              }),
-              created_at: now,
-              updated_at: now,
-            });
-          }
+              source_table: targetTable,
+              submission_id: strSubId,
+              pulled_at: now,
+            }),
+            created_at: now,
+            updated_at: now,
+          });
         }
       }
 
@@ -1423,6 +1445,18 @@ const pullCampaignData = async (params = {}, tenantContext = {}) => {
       }
       if (leadsToInsert.length > 0) {
         await db.batchInsert('campaign_leads', leadsToInsert, 500);
+        // Record into campaign_synced_records for permanent tracking
+        try {
+          const syncTrackingRows = leadsToInsert.map((l) => ({
+            id: uuidv4(),
+            project_id: pId,
+            external_id: l.external_id,
+            source_table: targetTable,
+            phone_number: l.phone_number,
+            synced_at: now,
+          }));
+          await db.batchInsert('campaign_synced_records', syncTrackingRows, 500).catch(() => null);
+        } catch (_) {}
       }
 
       const insertedCount = Math.max(dumpsToInsert.length, leadsToInsert.length, subsToInsert.length, fetchedRows.length);

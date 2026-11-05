@@ -138,7 +138,7 @@ const requireModuleEnabled = (moduleKey) => {
       const isEntitled = isTargetAiAudit
         ? isAiAuditActive
         : (targetModule === 'CAPI' || targetModule === 'AUDIT')
-        ? (enabledModules.includes('CAPI') || enabledModules.includes('AUDIT'))
+        ? (enabledModules.includes('CAPI') || enabledModules.includes('AUDIT') || isAiAuditActive)
         : enabledModules.includes(targetModule);
 
       if (!isEntitled) {

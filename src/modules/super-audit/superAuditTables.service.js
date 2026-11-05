@@ -517,7 +517,7 @@ async function ensureTvcDynamicTables(inputTableName = 'tvc_input', customOutput
           table.string('vs_past_voted_confirmation', 255).nullable();
           table.string('ls_past_voted_confirmation', 255).nullable();
           table.string('audit_status', 50).nullable();
-          table.string('pushed', 50).defaultTo('1');
+          table.string('pushed', 50).defaultTo('0');
           table.string('assignment_time', 100).nullable();
           table.string('agent_id', 100).nullable();
           table.timestamp('created_at', { useTz: true }).defaultTo(db.fn.now());

@@ -164,6 +164,12 @@ router.get('/ai-audits', checkPermission('capi', 'read'), capiController.getAiAu
 router.get('/ai-audited-records', checkPermission('capi', 'read'), capiController.getAiAuditedRecords);
 
 /**
+ * @route GET /api/v1/capi/campaign-audit-kpis
+ * @desc Get real-time campaign audit KPIs (total, audited, pending, passed, failed, review, fraud)
+ */
+router.get('/campaign-audit-kpis', checkPermission('capi', 'read'), capiController.getCampaignAuditKpis);
+
+/**
  * @route GET /api/v1/capi/export-audited/stats
  * @desc Get record count before exporting audited data
  */

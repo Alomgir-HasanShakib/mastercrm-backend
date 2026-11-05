@@ -785,7 +785,7 @@ const tvcService = {
         }
       }
 
-      throw new NotFoundError('No queued TVC leads currently available in the campaign pool');
+      return null;
     }
 
     const attempts = await tvcModel.findAttempts(nextLead.id);
@@ -997,7 +997,7 @@ const tvcService = {
         vs_past_voted_confirmation: String(answers.vs_past_voted_confirmation || raw.vs_past_voted_confirmation || ''),
         ls_past_voted_confirmation: String(answers.ls_past_voted_confirmation || raw.ls_past_voted_confirmation || ''),
         audit_status: String(attemptData.disposition || 'COMPLETED'),
-        pushed: '1',
+        pushed: '0',
         assignment_time: String(leadData.assignment_time || raw.assignment_time || now.toISOString().replace('T', ' ').substring(0, 19)),
         agent_id: agentIdentifier,
       };

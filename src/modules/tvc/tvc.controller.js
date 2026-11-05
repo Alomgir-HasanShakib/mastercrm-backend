@@ -130,6 +130,9 @@ const tvcController = {
         req.query.projectId,
         req.tenantContext
       );
+      if (!lead) {
+        return success(res, null, 'No queued TVC leads currently available in the campaign pool');
+      }
       return success(res, lead, lead.message || 'Next queued lead assigned for calling');
     } catch (err) {
       return next(err);

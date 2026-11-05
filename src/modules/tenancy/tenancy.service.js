@@ -248,7 +248,7 @@ const createOrganization = async (data, tenantContext = {}) => {
  * @returns {Promise<object>}
  */
 const updateOrganization = async (id, data, tenantContext = {}) => {
-  await getOrganizationById(id, tenantContext);
+  const currentOrg = await getOrganizationById(id, tenantContext);
 
   if (data.code) {
     const existing = await tenancyModel.findOrganizationByCode(data.code);
@@ -278,7 +278,142 @@ const updateOrganization = async (id, data, tenantContext = {}) => {
     updatePayload.enable_ai_audit = Boolean(updatePayload.enable_ai_audit);
   }
 
-  return tenancyModel.updateOrganization(id, updatePayload);
+  const updatedOrg = await tenancyModel.updateOrganization(id, updatePayload);
+
+  // Synchronize / update / auto-provision Organization Admin login user credentials
+  const newAdminEmail = (data.adminEmail || data.email)?.toLowerCase().trim();
+  const newAdminPassword = data.adminPassword?.trim();
+  const newAdminName = data.adminName?.trim();
+
+  try {
+    let orgAdminRole = null;
+    try {
+      orgAdminRole = await db('roles')
+        .where('slug', 'ORGANIZATION_ADMIN')
+        .orWhere('slug', 'ORG_ADMIN')
+        .first();
+    } catch (_) {}
+
+    if (!orgAdminRole) {
+      const rolesList = mockStore.data?.roles || [];
+      orgAdminRole = rolesList.find((r) => r.slug === 'ORGANIZATION_ADMIN') || {
+        id: 'f2a5bd52-b415-43f3-9097-6a675f6f96c3',
+        slug: 'ORGANIZATION_ADMIN',
+        name: 'Organization Administrator',
+      };
+    }
+
+    // Find the organization admin user:
+    // 1. By organization_id and ORGANIZATION_ADMIN role
+    // 2. Or any user belonging to this organization
+    // 3. Or matching current/new admin email
+    let orgAdminUser = null;
+    if (orgAdminRole) {
+      orgAdminUser = await db('users')
+        .where('organization_id', id)
+        .where('role_id', orgAdminRole.id)
+        .whereNull('deleted_at')
+        .first();
+    }
+
+    if (!orgAdminUser) {
+      orgAdminUser = await db('users')
+        .where('organization_id', id)
+        .whereNull('deleted_at')
+        .orderBy('created_at', 'asc')
+        .first();
+    }
+
+    const candidateEmail = newAdminEmail || currentOrg.email || currentOrg.adminEmail;
+    if (!orgAdminUser && candidateEmail) {
+      orgAdminUser = await db('users')
+        .whereRaw('LOWER(email) = ?', [candidateEmail.toLowerCase()])
+        .whereNull('deleted_at')
+        .first();
+    }
+
+    if (orgAdminUser) {
+      const userUpdates = { updated_at: new Date() };
+
+      if (newAdminEmail && newAdminEmail !== orgAdminUser.email.toLowerCase()) {
+        const conflict = await db('users')
+          .whereRaw('LOWER(email) = ?', [newAdminEmail.toLowerCase()])
+          .whereNot('id', orgAdminUser.id)
+          .whereNull('deleted_at')
+          .first();
+
+        if (!conflict) {
+          userUpdates.email = newAdminEmail;
+        }
+      }
+
+      if (newAdminPassword && newAdminPassword.length >= 6) {
+        userUpdates.password_hash = await hashPassword(newAdminPassword);
+      }
+
+      if (newAdminName) {
+        const nameParts = newAdminName.split(' ');
+        userUpdates.first_name = nameParts[0] || 'Org';
+        userUpdates.last_name = nameParts.slice(1).join(' ') || 'Admin';
+      }
+
+      if (data.status) {
+        userUpdates.status = data.status === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE';
+      }
+
+      if (orgAdminRole && orgAdminUser.role_id !== orgAdminRole.id) {
+        userUpdates.role_id = orgAdminRole.id;
+      }
+      if (orgAdminUser.organization_id !== id) {
+        userUpdates.organization_id = id;
+      }
+
+      if (Object.keys(userUpdates).length > 1) {
+        await db('users').where('id', orgAdminUser.id).update(userUpdates);
+      }
+
+      // Sync mock store
+      const mockUser = (mockStore.data?.users || []).find((u) => u.id === orgAdminUser.id || u.email === orgAdminUser.email);
+      if (mockUser) {
+        Object.assign(mockUser, userUpdates);
+      }
+    } else if (newAdminEmail || currentOrg.email) {
+      // Auto-provision admin user for this organization if not yet created
+      const targetEmail = newAdminEmail || currentOrg.email;
+      const targetPassword = newAdminPassword || 'Admin@123';
+      const passwordHash = await hashPassword(targetPassword);
+
+      const nameParts = (newAdminName || `${updatedOrg?.name || currentOrg.name} Admin`).trim().split(' ');
+      const firstName = nameParts[0] || 'Org';
+      const lastName = nameParts.slice(1).join(' ') || 'Admin';
+
+      const existingByEmail = await usersModel.findByEmail(targetEmail);
+      if (!existingByEmail) {
+        await usersModel.create({
+          email: targetEmail,
+          password_hash: passwordHash,
+          first_name: firstName,
+          last_name: lastName,
+          role_id: orgAdminRole?.id || null,
+          organization_id: id,
+          vendor_id: null,
+          status: data.status || 'ACTIVE',
+        });
+      } else {
+        await usersModel.update(existingByEmail.id, {
+          organization_id: id,
+          role_id: orgAdminRole?.id || existingByEmail.role_id,
+          password_hash: passwordHash,
+          status: data.status || 'ACTIVE',
+          deleted_at: null,
+        });
+      }
+    }
+  } catch (syncErr) {
+    console.error('Error synchronizing organization admin user during updateOrganization:', syncErr);
+  }
+
+  return updatedOrg;
 };
 
 

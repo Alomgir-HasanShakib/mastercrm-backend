@@ -61,7 +61,7 @@ const pullCampaignDataSchema = Joi.object({
   projectId: Joi.string().uuid().optional(),
   tableName: Joi.string().trim().max(128).optional(),
   sqlQuery: Joi.string().trim().max(2000).allow('', null).optional(),
-  limit: Joi.number().integer().min(1).max(50000).default(500),
+  limit: Joi.number().integer().min(1).max(100000).allow(null).optional(),
 });
 
 const saveActiveConfigSchema = Joi.object({

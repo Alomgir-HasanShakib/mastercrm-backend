@@ -1150,7 +1150,11 @@ class ProjectsService {
             metadata: JSON.stringify({
               ...(typeof lead.metadata === 'object' && lead.metadata !== null ? lead.metadata : JSON.parse(lead.metadata || '{}')),
               surveyResponses: surveyData.responses || {},
-              outputData: surveyData.outputData || {},
+              outputData: {
+                ...(surveyData.outputData || {}),
+                pushed: 0,
+              },
+              pushed: 0,
               completedBy: tenantContext.email || 'agent',
               audit_status: auditStatusVal,
               locked_by_auditor: null,
@@ -1222,7 +1226,9 @@ class ProjectsService {
           if (tableCols.includes('audit_status')) outRow.audit_status = surveyData.disposition || 'PASS';
           if (tableCols.includes('agent_id')) outRow.agent_id = tenantContext.email || 'agent';
           if (tableCols.includes('assignment_time')) outRow.assignment_time = new Date();
-          if (tableCols.includes('pushed')) outRow.pushed = true;
+          if (tableCols.includes('pushed')) {
+            outRow.pushed = colInfo['pushed']?.type === 'boolean' ? false : 0;
+          }
           if (tableCols.includes('created_at')) outRow.created_at = new Date();
           if (tableCols.includes('updated_at')) outRow.updated_at = new Date();
 

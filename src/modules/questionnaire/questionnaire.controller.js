@@ -7,6 +7,7 @@ const { success } = require('../../utils/response');
 const { ValidationError } = require('../../utils/errors');
 const questionnaireService = require('./questionnaire.service');
 const { auditLog } = require('../../services/auditLog');
+const { formatForTvcBuilder } = require('./tvcQuestionnaireParser');
 
 const questionnaireController = {
   // --- VERSION CONTROLLERS ---
@@ -450,6 +451,37 @@ const questionnaireController = {
       });
 
       return success(res, result, 'Official TVC Questionnaire seeded successfully to database', 201);
+    } catch (err) {
+      return next(err);
+    }
+  },
+
+  async parseTvcPdf(req, res, next) {
+    try {
+      if (!req.file || !req.file.buffer) {
+        throw new ValidationError('PDF or document file is required.');
+      }
+
+      const extraMeta = {
+        name: req.file.originalname,
+        filename: req.file.originalname,
+        userId: req.user?.id,
+      };
+
+      const result = await formatForTvcBuilder(req.file.buffer, extraMeta);
+
+      await auditLog({
+        userId: req.user?.id,
+        organizationId: req.user?.organization_id,
+        action: 'TVC_PDF_PARSED',
+        resource: 'questionnaire_pdf',
+        resourceId: null,
+        details: { filename: req.file.originalname, questionCount: result.summary?.totalQuestions },
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+      });
+
+      return success(res, result, 'TVC Questionnaire PDF parsed successfully with logic.');
     } catch (err) {
       return next(err);
     }

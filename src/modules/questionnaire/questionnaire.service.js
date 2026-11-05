@@ -414,8 +414,18 @@ const questionnaireService = {
       translations: sectionTranslations.filter((t) => t.entity_id === s.id),
     }));
 
+    let schemaJson = {};
+    try {
+      schemaJson = typeof version?.canonical_schema_jsonb === 'string'
+        ? JSON.parse(version.canonical_schema_jsonb)
+        : (version?.canonical_schema_jsonb || {});
+    } catch (_) {}
+
     return {
       ...version,
+      openingScript: schemaJson.openingScript || null,
+      closureScript: schemaJson.closureScript || schemaJson.closingScript || null,
+      closingScript: schemaJson.closingScript || schemaJson.closureScript || null,
       questions: formattedQuestions,
       sections: formattedSections,
       unsectionedQuestions,
@@ -440,6 +450,26 @@ const questionnaireService = {
         if (data.name || data.title) {
           updatePayload.name = data.name || data.title;
         }
+
+        if (data.openingScript || data.closureScript || data.closingScript || data.metadata) {
+          let existingSchema = {};
+          try {
+            existingSchema = typeof version.canonical_schema_jsonb === 'string'
+              ? JSON.parse(version.canonical_schema_jsonb)
+              : (version.canonical_schema_jsonb || {});
+          } catch (_) {}
+          updatePayload.canonical_schema_jsonb = JSON.stringify({
+            ...existingSchema,
+            openingScript: data.openingScript !== undefined ? data.openingScript : existingSchema.openingScript,
+            closureScript: (data.closureScript || data.closingScript) !== undefined ? (data.closureScript || data.closingScript) : existingSchema.closureScript,
+            closingScript: (data.closingScript || data.closureScript) !== undefined ? (data.closingScript || data.closureScript) : existingSchema.closingScript,
+            metadata: {
+              ...(existingSchema.metadata || {}),
+              ...(data.metadata || {}),
+            },
+          });
+        }
+
         await trx('questionnaire_versions').where('id', id).update(updatePayload);
 
         // If full sections tree or flat questions list is provided, sync sections, questions, and options
@@ -703,13 +733,19 @@ const questionnaireService = {
   },
 
   /**
-   * Delete draft questionnaire
+   * Delete questionnaire version (draft, published, or retired)
    * @param {string} id
    * @returns {Promise<void>}
    */
   async deleteVersion(id) {
     const version = await questionnaireModel.findVersionById(id);
-    this.assertDraft(version);
+    if (!version) {
+      throw new NotFoundError('Questionnaire version not found');
+    }
+
+    try {
+      await db('campaign_questionnaires').where('questionnaire_id', id).del();
+    } catch (_) {}
 
     await questionnaireModel.deleteVersion(id);
   },

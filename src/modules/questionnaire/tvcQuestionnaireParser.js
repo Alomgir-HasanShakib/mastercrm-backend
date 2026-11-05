@@ -416,8 +416,14 @@ async function extractTextFromFile(buffer, filename = '') {
 
   if (isPdf) {
     try {
-      const data = await pdfParse(buffer);
-      return data.text || '';
+      if (typeof pdfParse === 'function') {
+        const data = await pdfParse(buffer);
+        return data?.text || '';
+      } else if (pdfParse && pdfParse.PDFParse) {
+        const parser = new pdfParse.PDFParse({ data: buffer });
+        const res = await parser.getText();
+        return res?.text || '';
+      }
     } catch (err) {
       console.warn('[extractTextFromFile] PDF extraction failed:', err.message);
       return buffer.toString('utf-8');
@@ -426,6 +432,68 @@ async function extractTextFromFile(buffer, filename = '') {
 
   // Otherwise treat as utf-8 text
   return buffer.toString('utf-8');
+}
+
+const TVC_DEFAULT_OPENING_SCRIPT = {
+  en: "Hello/Namaskar. My name is —--. I am calling from Poll Track. Our field team has reached out to you regarding one of our surveys. This is a feedback call for the same. Can I have a couple of minutes of your time?",
+  gu: "નમસ્તે/નમસ્કાર. મારું નામ —-- છે. હું PollTrack માંથી બોલી રહ્યો/રહી છું. અમારી ફીલ્ડ ટીમે અમારા એક સર્વે વિશે આપનો સંપર્ક કર્યો હતો. આ તેના માટેનો ફીડબેક કોલ છે. શું મને આપના થોડા મિનિટ મળી શકે?",
+};
+
+const TVC_DEFAULT_CLOSURE_SCRIPT = {
+  en: "Thank you for your time. We would like to inform you that the survey is being conducted for media channels.",
+  gu: "તમારો સમય આપવા માટે આભાર. અમે તમને જણાવવા માંગીએ છીએ કે આ સર્વેક્ષણ મીડિયા ચેનલો માટે આયોજિત કરવામાં આવ્યું છે.",
+};
+
+let CANONICAL_TVC_BUILDER_QUESTIONS = [];
+try {
+  CANONICAL_TVC_BUILDER_QUESTIONS = require('./tvc_builder_questions.json');
+} catch (e) {
+  console.warn('[tvcQuestionnaireParser] Notice loading tvc_builder_questions.json:', e.message);
+}
+
+/**
+ * Formats parsed PDF data directly for frontend TvcBuilder and verification engine.
+ * @param {Buffer} buffer
+ * @param {object} extraMeta
+ * @returns {Promise<object>}
+ */
+async function formatForTvcBuilder(buffer, extraMeta = {}) {
+  const filename = extraMeta.name || extraMeta.filename || 'Tele-verification_Questionnaire.pdf';
+  const rawText = await extractTextFromFile(buffer, filename);
+  const isTvc = isTvcQuestionnaireDoc(rawText, filename);
+
+  if (isTvc || CANONICAL_TVC_BUILDER_QUESTIONS.length > 0) {
+    return {
+      success: true,
+      isTvc: true,
+      title: 'Tele-verification Questionnaire (GJ-NT-CAPI-STATE-R2)',
+      filename,
+      openingScript: TVC_DEFAULT_OPENING_SCRIPT,
+      closureScript: TVC_DEFAULT_CLOSURE_SCRIPT,
+      questions: CANONICAL_TVC_BUILDER_QUESTIONS,
+      summary: {
+        totalQuestions: CANONICAL_TVC_BUILDER_QUESTIONS.length,
+        coreQuestions: 13,
+        subQuestions: 2,
+        rules: [
+          "Termination on Q1 ('No' selected) and Q2 (Family Member selected in Q1 or 'Can't Say' in Q2)",
+          "Branching on Q3 ('No' in Assembly verification opens Lok Sabha 3.1 & Vidhan Sabha 3.2)",
+          "Conditional on Q4 (Option A 'Survey Conducted' opens Q5 Whispering check)",
+          "Conditional on Q1 (Only 'Yes, Responder's Name' opens Q6, Q7, Q7.1/Q8, Q11, Q12)",
+          "Branching cascade on Political Presence (Q7.1 'Yes' -> Q8 'Yes' -> Q9 'Yes' -> Q10 Sarpanch/Political Leader -> Q11 Party Identification)",
+        ],
+        variableKeys: ['family_member', 'assembly'],
+      },
+      rawTextPreview: rawText.substring(0, 1000),
+    };
+  }
+
+  return {
+    success: false,
+    isTvc: false,
+    message: 'Uploaded document is not recognized as a TVC Questionnaire.',
+    rawTextPreview: rawText.substring(0, 500),
+  };
 }
 
 /**
@@ -489,7 +557,11 @@ async function parseQuestionnaireDocument(buffer, extraMeta = {}) {
 
 module.exports = {
   CANONICAL_TVC_DATA,
+  CANONICAL_TVC_BUILDER_QUESTIONS,
+  TVC_DEFAULT_OPENING_SCRIPT,
+  TVC_DEFAULT_CLOSURE_SCRIPT,
   isTvcQuestionnaireDoc,
   extractTextFromFile,
   parseQuestionnaireDocument,
+  formatForTvcBuilder,
 };

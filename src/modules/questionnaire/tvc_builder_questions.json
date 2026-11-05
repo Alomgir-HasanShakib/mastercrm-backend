@@ -1,0 +1,714 @@
+[
+  {
+    "id": "TVC_Q1",
+    "sn": 1,
+    "tag": "family_member",
+    "columnName": "family_member",
+    "actualColumn": "family_member Invalidation",
+    "code": "FAMILY_MEMBER_INVALIDATION",
+    "labelEn": "1. Is your/or any other Family member's name is ___ (family_member) Invalidation",
+    "labelGu": "શું તમારું/અથવા તમારા પરિવારના કોઈ અન્ય સભ્યનું નામ ___ છે?",
+    "type": "select",
+    "options": [
+      {
+        "label": "Yes, Responder's Name [હા, જવાબ આપનારનું નામ]",
+        "value": "Yes, Responder's Name"
+      },
+      {
+        "label": "Yes, Responders Family Member's Name [હા, જવાબ આપનારના પરિવારના સભ્યનું નામ]",
+        "value": "Yes, Responders Family Member's Name"
+      },
+      {
+        "label": "No [ના]",
+        "value": "No"
+      }
+    ],
+    "ruleType": "TERMINATION",
+    "ruleDescription": "Survey Ends if 'No [ના]' is selected. If 'Yes, Responders Family Member's Name' is selected, survey ends right after Question 2 (Gender).",
+    "conditions": [],
+    "hasDynamicVariable": true,
+    "variableKey": "family_member",
+    "hasActualField": true,
+    "actualFieldLabel": "Family Member Invalidation Notes / Actual Name"
+  },
+  {
+    "id": "TVC_Q2",
+    "sn": 2,
+    "tag": "gender",
+    "columnName": "gender",
+    "code": "GENDER_RESPONDER",
+    "labelEn": "2. Gender of Responder (Gender)",
+    "labelGu": "જવાબ આપનારનું લિંગ",
+    "type": "select",
+    "options": [
+      {
+        "label": "Male [પુરુષ]",
+        "value": "Male"
+      },
+      {
+        "label": "Female [મહિલા]",
+        "value": "Female"
+      },
+      {
+        "label": "Can’t Say [કહી શકતા નથી]",
+        "value": "Can't Say"
+      }
+    ],
+    "ruleType": "TERMINATION",
+    "ruleDescription": "Survey Ends if 'No' or 'Can’t Say' is selected in Ques 2 & Survey Ends if 'Yes, Responder Family Member's Name' was selected in Ques 1.",
+    "conditions": [
+      {
+        "questionId": "TVC_Q1",
+        "operator": "not_equals",
+        "value": "No",
+        "description": "Will not open if Q1 is 'No [ના]'"
+      }
+    ],
+    "hasDynamicVariable": false,
+    "hasActualField": false
+  },
+  {
+    "id": "TVC_Q3",
+    "sn": 3,
+    "tag": "assembly",
+    "columnName": "assembly",
+    "code": "ASSEMBLY_VERIFICATION",
+    "labelEn": "3. Is the name of your assembly __? (assembly)",
+    "labelGu": "શું તમારી વિધાનસભાનું નામ ___ છે?",
+    "type": "select",
+    "options": [
+      {
+        "label": "Yes [હા]",
+        "value": "Yes"
+      },
+      {
+        "label": "Not a voter [મતદાર નથી]",
+        "value": "Not a voter"
+      },
+      {
+        "label": "No [ના]",
+        "value": "No"
+      }
+    ],
+    "ruleType": "BRANCHING",
+    "ruleDescription": "Selecting 'No' opens sub-questions 3.1 (lok_sabha) & 3.2 (vidhan_sabha).",
+    "conditions": [
+      {
+        "questionId": "TVC_Q1",
+        "operator": "equals",
+        "value": "Yes, Responder's Name",
+        "description": "Only if Ques 1 response is 'Yes, Responder's Name'"
+      }
+    ],
+    "hasDynamicVariable": true,
+    "variableKey": "assembly",
+    "hasActualField": false
+  },
+  {
+    "id": "TVC_Q3_1",
+    "sn": 3.1,
+    "tag": "lok_sabha",
+    "columnName": "lok_sabha",
+    "code": "LOK_SABHA",
+    "isSubQuestion": true,
+    "parentQuestionId": "TVC_Q3",
+    "labelEn": "3.1. Can you please tell me the name of your Lok Sabha? (lok_sabha)",
+    "labelGu": "શું તમે મને તમારી લોકસભાનું નામ કહી શકો?",
+    "type": "select",
+    "options": [
+      {
+        "label": "[01] Kasaragod",
+        "value": "Kasaragod"
+      },
+      {
+        "label": "[02] Kannur",
+        "value": "Kannur"
+      },
+      {
+        "label": "[03] Vadakara",
+        "value": "Vadakara"
+      },
+      {
+        "label": "[04] Wayanad",
+        "value": "Wayanad"
+      },
+      {
+        "label": "[05] Kozhikode",
+        "value": "Kozhikode"
+      },
+      {
+        "label": "[06] Malappuram",
+        "value": "Malappuram"
+      },
+      {
+        "label": "[07] Ponnani",
+        "value": "Ponnani"
+      },
+      {
+        "label": "[08] Palakkad",
+        "value": "Palakkad"
+      },
+      {
+        "label": "[09] Alathur",
+        "value": "Alathur"
+      },
+      {
+        "label": "[10] Thrissur",
+        "value": "Thrissur"
+      },
+      {
+        "label": "[11] Chalakudy",
+        "value": "Chalakudy"
+      },
+      {
+        "label": "[12] Ernakulam",
+        "value": "Ernakulam"
+      },
+      {
+        "label": "[13] Idukki",
+        "value": "Idukki"
+      },
+      {
+        "label": "[14] Kottayam",
+        "value": "Kottayam"
+      },
+      {
+        "label": "[15] Alappuzha",
+        "value": "Alappuzha"
+      },
+      {
+        "label": "[16] Mavelikkara",
+        "value": "Mavelikkara"
+      },
+      {
+        "label": "[17] Pathanamthitta",
+        "value": "Pathanamthitta"
+      },
+      {
+        "label": "[18] Kollam",
+        "value": "Kollam"
+      },
+      {
+        "label": "[19] Attingal",
+        "value": "Attingal"
+      },
+      {
+        "label": "[20] Thiruvananthapuram",
+        "value": "Thiruvananthapuram"
+      }
+    ],
+    "ruleType": "CONDITIONAL",
+    "ruleDescription": "Will open when 'No' is selected in Q-3 (assembly).",
+    "conditions": [
+      {
+        "questionId": "TVC_Q3",
+        "operator": "equals",
+        "value": "No",
+        "description": "Opens when 'No' selected in Q-3"
+      }
+    ],
+    "hasDynamicVariable": false,
+    "hasActualField": false
+  },
+  {
+    "id": "TVC_Q3_2",
+    "sn": 3.2,
+    "tag": "vidhan_sabha",
+    "columnName": "vidhan_sabha",
+    "code": "VIDHAN_SABHA",
+    "isSubQuestion": true,
+    "parentQuestionId": "TVC_Q3",
+    "labelEn": "3.2. Can you please tell me the name of your Vidhan Sabha? (vidhan_sabha)",
+    "labelGu": "શું તમે મને તમારી વિધાનસભાનું નામ કહી શકો?",
+    "type": "select",
+    "options": [
+      {
+        "label": "Select from mapped Assembly Constituencies (AC)",
+        "value": "mapped_ac"
+      },
+      {
+        "label": "Manjeshwar",
+        "value": "Manjeshwar"
+      },
+      {
+        "label": "Kasaragod",
+        "value": "Kasaragod"
+      },
+      {
+        "label": "Udma",
+        "value": "Udma"
+      },
+      {
+        "label": "Kanhangad",
+        "value": "Kanhangad"
+      },
+      {
+        "label": "Trikaripur",
+        "value": "Trikaripur"
+      },
+      {
+        "label": "Payyannur",
+        "value": "Payyannur"
+      },
+      {
+        "label": "Kalliasseri",
+        "value": "Kalliasseri"
+      },
+      {
+        "label": "Taliparamba",
+        "value": "Taliparamba"
+      },
+      {
+        "label": "Irikkur",
+        "value": "Irikkur"
+      },
+      {
+        "label": "Other / Unlisted",
+        "value": "Other"
+      }
+    ],
+    "ruleType": "CONDITIONAL",
+    "ruleDescription": "Will open when 'No' is selected in Q-3 (assembly).",
+    "conditions": [
+      {
+        "questionId": "TVC_Q3",
+        "operator": "equals",
+        "value": "No",
+        "description": "Opens when 'No' selected in Q-3"
+      }
+    ],
+    "hasDynamicVariable": false,
+    "hasActualField": false
+  },
+  {
+    "id": "TVC_Q4",
+    "sn": 4,
+    "tag": "field_agent_visit",
+    "columnName": "field_agent_visit",
+    "code": "FIELD_AGENT_VISIT",
+    "labelEn": "4. Was a survey related to the elections conducted at your location by the Nexastats team, in which you were asked about voting and the elections?",
+    "labelGu": "તમારા અહીં Nexa Status ની ટીમ તરફથી ચૂંટણી સંબંધિત કોઈ સર્વે થયો હતો જેમાં તમને મત અને ચૂંટણી વિશે પૂછવામાં આવ્યું હતું?",
+    "type": "select",
+    "options": [
+      {
+        "label": "Call Completed & Respondent Confirmed that the Survey was Conducted.",
+        "value": "Survey Conducted"
+      },
+      {
+        "label": "Call Completed & Respondent Confirmed that Only Demographic Details were Collected (Name/Caste/Mobile Number).",
+        "value": "Only Demographic Details"
+      },
+      {
+        "label": "No",
+        "value": "No"
+      },
+      {
+        "label": "Do not remember",
+        "value": "Do not remember"
+      }
+    ],
+    "ruleType": "BRANCHING",
+    "ruleDescription": "Option A opens Question 5 (Whispering / Conduct Check). Only if Q1 is 'Yes, Responder's Name'.",
+    "conditions": [
+      {
+        "questionId": "TVC_Q1",
+        "operator": "equals",
+        "value": "Yes, Responder's Name",
+        "description": "Only If Ques 1 response is 'Yes, Responder's Name'"
+      }
+    ],
+    "hasDynamicVariable": false,
+    "hasActualField": false
+  },
+  {
+    "id": "TVC_Q5",
+    "sn": 5,
+    "tag": "field_agent_visit_confirmation",
+    "columnName": "field_agent_visit_confirmation",
+    "code": "FIELD_AGENT_VISIT_CONFIRMATION",
+    "labelEn": "5. Sir/Madam, please also tell us whether the agent who came to you to conduct the survey gave you all the answers of your own free will, or did the agent help or suggest you in any way to answer, or did he ask you to answer in your ear or by speaking softly? (whispering check)",
+    "labelGu": "સર/મેડમ, કૃપા કરીને અમને આ પણ જણાવશો કે જે એજન્ટ તમારા પાસે સર્વે કરવા આવ્યો હતો, શું તમે બધા જવાબ પોતાની ઇચ્છાથી આપ્યા હતા, કે એજન્ટે તમને જવાબ આપવા કોઈ રીતે મદદ અથવા સૂચન કર્યું હતું? કે પછી તેમણે કાનમાં કે ધીમા અવાજે જવાબ આપવા કહ્યું હતું?",
+    "type": "select",
+    "options": [
+      {
+        "label": "Call Completed & Respondent Confirmed that the Survey was Conducted, but the Agent was telling Answers through Whispering.",
+        "value": "Agent Whispered Answers"
+      },
+      {
+        "label": "I gave all the answers myself.",
+        "value": "Answered Myself"
+      }
+    ],
+    "ruleType": "CONDITIONAL",
+    "ruleDescription": "It will open if Option A ('Survey Conducted') is selected in Q-4.",
+    "conditions": [
+      {
+        "questionId": "TVC_Q4",
+        "operator": "equals",
+        "value": "Survey Conducted",
+        "description": "Opens if option A is selected in Q-4"
+      }
+    ],
+    "hasDynamicVariable": false,
+    "hasActualField": false
+  },
+  {
+    "id": "TVC_Q6",
+    "sn": 6,
+    "tag": "Survey_process",
+    "columnName": "Survey_process",
+    "code": "SURVEY_PROCESS",
+    "labelEn": "6. How was the agent doing the interview process?",
+    "labelGu": "એજન્ટ ઇન્ટરવ્યુ પ્રક્રિયા કેવી રીતે કરી રહ્યો હતો?",
+    "type": "select",
+    "options": [
+      {
+        "label": "Good",
+        "value": "Good"
+      },
+      {
+        "label": "Very Good",
+        "value": "Very Good"
+      },
+      {
+        "label": "Bad",
+        "value": "Bad"
+      },
+      {
+        "label": "Very Bad",
+        "value": "Very Bad"
+      },
+      {
+        "label": "Can't say",
+        "value": "Can't say"
+      }
+    ],
+    "ruleType": "CONDITIONAL",
+    "ruleDescription": "Will open when 'Yes, Responder's Name' is selected in Q-1.",
+    "conditions": [
+      {
+        "questionId": "TVC_Q1",
+        "operator": "equals",
+        "value": "Yes, Responder's Name",
+        "description": "Will open when 'Yes, Responder's Name' is selected in Q-1"
+      }
+    ],
+    "hasDynamicVariable": false,
+    "hasActualField": false
+  },
+  {
+    "id": "TVC_Q7",
+    "sn": 7,
+    "tag": "agent_influence_attempt",
+    "columnName": "agent_influence_attempt",
+    "actualColumn": "agent_influence_attempt_actual",
+    "code": "AGENT_INFLUENCE_ATTEMPT",
+    "labelEn": "7. Are agents trying to make you say the name of any party or MLA/MP?",
+    "labelGu": "શું એજન્ટ તમારી પાસેથી કોઈ પક્ષ અથવા વિધાનસભા/સંસદ સભ્યનું નામ લેવા પ્રયાસ કરી રહ્યા હતા?",
+    "type": "select",
+    "options": [
+      {
+        "label": "BJP",
+        "value": "BJP"
+      },
+      {
+        "label": "Congress",
+        "value": "Congress"
+      },
+      {
+        "label": "AAP",
+        "value": "AAP"
+      },
+      {
+        "label": "NCP",
+        "value": "NCP"
+      },
+      {
+        "label": "Shiv Sena",
+        "value": "Shiv Sena"
+      },
+      {
+        "label": "JD(U)",
+        "value": "JD(U)"
+      },
+      {
+        "label": "RLD",
+        "value": "RLD"
+      },
+      {
+        "label": "GPP",
+        "value": "GPP"
+      },
+      {
+        "label": "LJP",
+        "value": "LJP"
+      },
+      {
+        "label": "Independent",
+        "value": "Independent"
+      },
+      {
+        "label": "Agent did not ask",
+        "value": "Agent did not ask"
+      },
+      {
+        "label": "Others",
+        "value": "Others"
+      }
+    ],
+    "ruleType": "CONDITIONAL",
+    "ruleDescription": "Only If Ques 1 response is 'Yes, Responder's Name'. Captures agent_influence_attempt_actual when 'Others' is selected.",
+    "conditions": [
+      {
+        "questionId": "TVC_Q1",
+        "operator": "equals",
+        "value": "Yes, Responder's Name",
+        "description": "Only If Ques 1 response is 'Yes, Responder's Name'"
+      }
+    ],
+    "hasDynamicVariable": false,
+    "hasActualField": true,
+    "actualFieldLabel": "Actual Party or MLA/MP named by agent (agent_influence_attempt_actual)"
+  },
+  {
+    "id": "TVC_Q8",
+    "sn": 8,
+    "tag": "local_leader_accompany",
+    "columnName": "local_leader_accompany",
+    "code": "LOCAL_LEADER_ACCOMPANY",
+    "labelEn": "8. Was anyone else present with the person who conducted your interview? (local_leader_accompany)",
+    "labelGu": "શું તમારા ઈન્ટરવ્યૂ લેતા વ્યક્તિ સાથે કોઈ અન્ય વ્યક્તિ પણ હાજર હતો?",
+    "type": "select",
+    "options": [
+      {
+        "label": "Yes",
+        "value": "Yes"
+      },
+      {
+        "label": "No",
+        "value": "No"
+      }
+    ],
+    "ruleType": "BRANCHING",
+    "ruleDescription": "Selecting 'Yes' triggers Question 9 (Prior acquaintance check).",
+    "conditions": [
+      {
+        "questionId": "TVC_Q1",
+        "operator": "equals",
+        "value": "Yes, Responder's Name",
+        "description": "Only If Ques 1 response is 'Yes, Responder's Name'"
+      }
+    ],
+    "hasDynamicVariable": false,
+    "hasActualField": false
+  },
+  {
+    "id": "TVC_Q9",
+    "sn": 9,
+    "tag": "local_leader_accompany_1",
+    "columnName": "local_leader_accompany_1",
+    "code": "LOCAL_LEADER_ACCOMPANY_1",
+    "labelEn": "9. Did you already know the person who was present with the interviewer? (local_leader_accompany_1)",
+    "labelGu": "શું તમે તે વ્યક્તિને પહેલાથી ઓળખતા હતા જે ઈન્ટરવ્યૂ લેતા વ્યક્તિ સાથે હાજર હતો?",
+    "type": "select",
+    "options": [
+      {
+        "label": "Yes",
+        "value": "Yes"
+      },
+      {
+        "label": "No",
+        "value": "No"
+      }
+    ],
+    "ruleType": "BRANCHING",
+    "ruleDescription": "Will open when 'Yes' is selected in Q-8 (accompany). Selecting 'Yes' opens Question 10.",
+    "conditions": [
+      {
+        "questionId": "TVC_Q8",
+        "operator": "equals",
+        "value": "Yes",
+        "description": "Will open when 'Yes' is selected in Q-8 (local_leader_accompany)"
+      }
+    ],
+    "hasDynamicVariable": false,
+    "hasActualField": false
+  },
+  {
+    "id": "TVC_Q10",
+    "sn": 10,
+    "tag": "local_leader_accompany_2",
+    "columnName": "local_leader_accompany_2",
+    "code": "LOCAL_LEADER_ACCOMPANY_2",
+    "labelEn": "10. How do you know that person? (local_leader_accompany_2)",
+    "labelGu": "ઈન્ટરવ્યૂ લેતા વ્યક્તિ સાથે હાજર વ્યક્તિને તમે કેવી રીતે ઓળખો છો?",
+    "type": "select",
+    "options": [
+      {
+        "label": "Sarpanch/Pradhan of that Area",
+        "value": "Sarpanch/Pradhan of that Area"
+      },
+      {
+        "label": "Political Leader of that Area",
+        "value": "Political Leader of that Area"
+      },
+      {
+        "label": "Local Person",
+        "value": "Local Person"
+      },
+      {
+        "label": "Team Member",
+        "value": "Team Member"
+      }
+    ],
+    "ruleType": "BRANCHING",
+    "ruleDescription": "Will open when 'Yes' is selected in Q-9. Selecting Option A or B opens Question 11.",
+    "conditions": [
+      {
+        "questionId": "TVC_Q9",
+        "operator": "equals",
+        "value": "Yes",
+        "description": "Will open when 'Yes' is selected in Q-9 (local_leader_accompany_1)"
+      }
+    ],
+    "hasDynamicVariable": false,
+    "hasActualField": false
+  },
+  {
+    "id": "TVC_Q11",
+    "sn": 11,
+    "tag": "local_leader_accompany_3",
+    "columnName": "local_leader_accompany_3",
+    "code": "LOCAL_LEADER_ACCOMPANY_3",
+    "labelEn": "11. How did you identify that he was associated with a political party? (local_leader_accompany_3)",
+    "labelGu": "તમે કેવી રીતે ઓળખ્યું કે તે કોઈ રાજકીય પક્ષ સાથે જોડાયેલો છે?",
+    "type": "select",
+    "options": [
+      {
+        "label": "Badge",
+        "value": "Badge"
+      },
+      {
+        "label": "Identity Card",
+        "value": "Identity Card"
+      },
+      {
+        "label": "That person himself given his introduction",
+        "value": "That person himself given his introduction"
+      },
+      {
+        "label": "Known Leader/Person of that Area",
+        "value": "Known Leader/Person of that Area"
+      },
+      {
+        "label": "Relative",
+        "value": "Relative"
+      },
+      {
+        "label": "Friend",
+        "value": "Friend"
+      },
+      {
+        "label": "None of these",
+        "value": "None of these"
+      }
+    ],
+    "ruleType": "CONDITIONAL",
+    "ruleDescription": "Will open when Sarpanch/Pradhan or Political Leader is selected in Q-10.",
+    "conditions": [
+      {
+        "questionId": "TVC_Q10",
+        "operator": "one_of",
+        "values": [
+          "Sarpanch/Pradhan of that Area",
+          "Political Leader of that Area"
+        ],
+        "description": "Will open when Option A or B is selected in Q-10"
+      }
+    ],
+    "hasDynamicVariable": false,
+    "hasActualField": false
+  },
+  {
+    "id": "TVC_Q12",
+    "sn": 12,
+    "tag": "multiple Survey from the same house",
+    "columnName": "multiple Survey from the same house",
+    "code": "MULTIPLE_SURVEYS_HOUSE",
+    "labelEn": "12. Apart from you, has any of your family members given the interview?",
+    "labelGu": "શું તમારા પરિવારમાં આપ સિવાય કોઈ અન્ય લોકોએ પણ ઈન્ટરવ્યૂ આપ્યું છે?",
+    "type": "select",
+    "options": [
+      {
+        "label": "Yes",
+        "value": "Yes"
+      },
+      {
+        "label": "NO",
+        "value": "NO"
+      }
+    ],
+    "ruleType": "CONDITIONAL",
+    "ruleDescription": "Only If Ques 1 response is 'Yes, Responder's Name'.",
+    "conditions": [
+      {
+        "questionId": "TVC_Q1",
+        "operator": "equals",
+        "value": "Yes, Responder's Name",
+        "description": "Only If Ques 1 response is 'Yes, Responder's Name'"
+      }
+    ],
+    "hasDynamicVariable": false,
+    "hasActualField": false
+  },
+  {
+    "id": "TVC_Q13",
+    "sn": 13,
+    "tag": "survey_target_opinion",
+    "columnName": "survey_target_opinion",
+    "actualColumn": "Survey_target_opinion_actual",
+    "code": "SURVEY_TARGET_OPINION",
+    "labelEn": "13. According to you, this survey was conducted for whom?",
+    "labelGu": "તમારા અનુસાર આ સર્વેક્ષણ કોના માટે આયોજિત કરવામાં આવ્યું હતું?",
+    "type": "select",
+    "options": [
+      {
+        "label": "Media [મીડિયા]",
+        "value": "Media"
+      },
+      {
+        "label": "Current State Govt [વર્તમાન રાજ્ય સરકાર]",
+        "value": "Current State Govt"
+      },
+      {
+        "label": "Opposition [વિપક્ષ]",
+        "value": "Opposition"
+      },
+      {
+        "label": "Independent Candidate [સ્વતંત્ર ઉમેદવાર]",
+        "value": "Independent Candidate"
+      },
+      {
+        "label": "Don’t Know [ખબર નથી / કહી શકતા નથી]",
+        "value": "Don't Know"
+      },
+      {
+        "label": "Others",
+        "value": "Others"
+      }
+    ],
+    "ruleType": "CONDITIONAL",
+    "ruleDescription": "Only If Ques 1 response is 'Yes, Responder's Name'. Captures Survey_target_opinion_actual when 'Others' selected.",
+    "conditions": [
+      {
+        "questionId": "TVC_Q1",
+        "operator": "equals",
+        "value": "Yes, Responder's Name",
+        "description": "Only If Ques 1 response is 'Yes, Responder's Name'"
+      }
+    ],
+    "hasDynamicVariable": false,
+    "hasActualField": true,
+    "actualFieldLabel": "Specify target opinion (Survey_target_opinion_actual)"
+  }
+]

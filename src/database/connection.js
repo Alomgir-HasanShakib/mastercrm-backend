@@ -135,6 +135,22 @@ async function ensureDatabaseSchema() {
       }
     } catch (_) {}
 
+    // Ensure persistent tracking table for all pulled/synced records
+    try {
+      const hasSyncedTable = await db.schema.hasTable('campaign_synced_records');
+      if (!hasSyncedTable) {
+        await db.schema.createTable('campaign_synced_records', (table) => {
+          table.uuid('id').primary();
+          table.uuid('project_id').notNullable().index();
+          table.string('external_id', 255).notNullable().index();
+          table.string('source_table', 128).nullable().index();
+          table.string('phone_number', 64).nullable().index();
+          table.timestamp('synced_at').defaultTo(db.fn.now());
+          table.unique(['project_id', 'external_id']);
+        });
+      }
+    } catch (_) {}
+
     // Ensure ORGANIZATION_ADMIN role exists and fix any users incorrectly marked as CLIENT_ADMIN
     const hasRolesTable = await db.schema.hasTable('roles');
     if (hasRolesTable) {

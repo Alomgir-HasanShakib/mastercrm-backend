@@ -229,7 +229,16 @@ const capiController = {
         return success(res, null, 'Please select a campaign to fetch pending audits');
       }
       const ac = req.query?.ac || req.body?.ac || req.query?.constituency || null;
-      const contextWithAc = { ...(req.tenantContext || {}), ac };
+      const excludeLeadIds = req.query?.excludeLeadIds || req.body?.excludeLeadIds || null;
+      const workerId = req.query?.workerId || req.body?.workerId || null;
+      const isAiAudit = Boolean(req.query?.isAiAudit || req.body?.isAiAudit || workerId);
+      const contextWithAc = {
+        ...(req.tenantContext || {}),
+        ac,
+        excludeLeadIds,
+        workerId,
+        isAiAudit,
+      };
       const audit = await capiService.getNextQueuedAudit(auditorId, projectId, contextWithAc);
 
       if (!audit) {
@@ -505,6 +514,24 @@ const capiController = {
       });
     } catch (err) {
       logger.error('Error fetching audited export stats: %s', err.message);
+      return next(err);
+    }
+  },
+
+  /**
+   * Get Real-time Campaign Audit KPIs (total, audited, pending, passed, failed, review, fraud)
+   */
+  async getCampaignAuditKpis(req, res, next) {
+    try {
+      const projectId = req.query.projectId;
+      const kpis = await capiService.getCampaignAuditKpis(projectId, req.tenantContext);
+      return res.status(200).json({
+        success: true,
+        data: kpis,
+        message: 'Campaign audit KPIs retrieved successfully',
+      });
+    } catch (err) {
+      logger.error('Error fetching campaign audit KPIs: %s', err.message);
       return next(err);
     }
   },

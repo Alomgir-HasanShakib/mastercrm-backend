@@ -3736,6 +3736,11 @@ const mockStore = {
   getCampaignLeadsIsolated(projectId, filters = {}, userContext = {}) {
     let leads = store.campaign_leads.filter((l) => l.project_id === projectId);
 
+    // Organization data isolation: Non-Master Admin users can ONLY access leads distributed to their Organization
+    if (userContext && !userContext.isMasterAdmin && userContext.organizationId) {
+      leads = leads.filter((l) => l.organization_id === userContext.organizationId);
+    }
+
     const isVendorUser = Boolean(userContext && (userContext.vendorId || (userContext.role && String(userContext.role).toUpperCase().includes('VENDOR'))));
 
     if (isVendorUser && userContext.vendorId) {

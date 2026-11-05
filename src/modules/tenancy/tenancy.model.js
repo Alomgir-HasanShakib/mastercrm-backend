@@ -98,13 +98,17 @@ const findAllOrganizations = async (filters = {}, pagination = {}) => {
       const rows = await query
         .select(
           'organizations.*',
-          db.raw('(SELECT COUNT(*) FROM users WHERE users.organization_id = organizations.id AND users.deleted_at IS NULL) as total_users')
+          db.raw('(SELECT COUNT(*) FROM users WHERE users.organization_id = organizations.id AND users.deleted_at IS NULL) as total_users'),
+          db.raw('(SELECT email FROM users WHERE users.organization_id = organizations.id AND users.deleted_at IS NULL ORDER BY users.created_at ASC LIMIT 1) as org_admin_email'),
+          db.raw('(SELECT CONCAT(first_name, \' \', last_name) FROM users WHERE users.organization_id = organizations.id AND users.deleted_at IS NULL ORDER BY users.created_at ASC LIMIT 1) as org_admin_name')
         )
         .orderBy(sort, sortOrder.toLowerCase())
         .limit(limit)
         .offset(offset);
       return rows.map((r) => ({
         ...r,
+        adminEmail: r.email || r.org_admin_email || null,
+        adminName: r.org_admin_name ? r.org_admin_name.trim() : `${r.name} Admin`,
         total_users: Math.max(parseInt(r.total_users || 0, 10), 1),
         totalUsers: Math.max(parseInt(r.total_users || 0, 10), 1),
         code: r.code || r.slug,
@@ -173,7 +177,9 @@ const findOrganizationById = async (id) => {
       const org = await db('organizations')
         .select(
           'organizations.*',
-          db.raw('(SELECT COUNT(*) FROM users WHERE users.organization_id = organizations.id AND users.deleted_at IS NULL) as total_users')
+          db.raw('(SELECT COUNT(*) FROM users WHERE users.organization_id = organizations.id AND users.deleted_at IS NULL) as total_users'),
+          db.raw('(SELECT email FROM users WHERE users.organization_id = organizations.id AND users.deleted_at IS NULL ORDER BY users.created_at ASC LIMIT 1) as org_admin_email'),
+          db.raw('(SELECT CONCAT(first_name, \' \', last_name) FROM users WHERE users.organization_id = organizations.id AND users.deleted_at IS NULL ORDER BY users.created_at ASC LIMIT 1) as org_admin_name')
         )
         .where('organizations.id', id)
         .first();
@@ -188,6 +194,8 @@ const findOrganizationById = async (id) => {
       const total = Math.max(parseInt(org.total_users || 0, 10), 1);
       return {
         ...org,
+        adminEmail: org.email || org.org_admin_email || null,
+        adminName: org.org_admin_name ? org.org_admin_name.trim() : `${org.name} Admin`,
         total_users: total,
         totalUsers: total,
         code: org.code || org.slug,

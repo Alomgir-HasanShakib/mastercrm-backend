@@ -123,6 +123,12 @@ router.post(
 );
 
 router.post(
+  '/parse-pdf',
+  upload.single('file'),
+  questionnaireController.parseTvcPdf
+);
+
+router.post(
   '/import',
   checkPermission('questionnaire', 'create'),
   upload.single('file'),

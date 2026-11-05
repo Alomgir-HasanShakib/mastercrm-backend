@@ -384,7 +384,7 @@ function formatLeadToOutput2Row(lead, decisionData = {}, user = {}, sn = null) {
     rating: String(Math.round((score / 100) * 4) + 1),
     Remarks: decisionData.feedback || output.remarks || 'Forensic diarization verified. Speech clarity 100%',
     audit_status: 'COMPLETED',
-    pushed: 1,
+    pushed: 0,
     audit_start_time: auditStartStr,
   };
 
@@ -422,6 +422,12 @@ async function syncOutput2Table(output2TableName, output2Row) {
       if (tableCols.includes(k)) {
         cleanRow[k] = v;
       }
+    }
+
+    // Explicitly guarantee pushed is 0 / false when saving unpushed audit records
+    if (tableCols.includes('pushed')) {
+      const isBool = colInfo['pushed']?.type === 'boolean';
+      cleanRow.pushed = isBool ? false : 0;
     }
 
     // Upsert by submission_id

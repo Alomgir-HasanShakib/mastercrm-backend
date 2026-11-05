@@ -17,6 +17,7 @@ let schedulerTimer = null;
 let schedulerInterval = null;
 let isSchedulerActive = false;
 let isSyncRunning = false;
+const activeSyncMutex = new Map(); // projectId -> Promise<syncResult>
 
 /**
  * Clean and validate a table identifier to prevent SQL injection.
@@ -53,7 +54,11 @@ const fetchTableRecords = async (tableName, orgId, projectId, options = {}) => {
     return { rows: [], sourceInfo: 'INVALID_TABLE_NAME' };
   }
 
-  const requestedLimit = parseInt(options.limit, 10) || 10000;
+  const requestedLimit = options.limit !== undefined && options.limit !== null && options.limit !== '' && options.limit !== 'all' && options.limit !== 'ALL' && parseInt(options.limit, 10) > 0
+    ? parseInt(options.limit, 10)
+    : null;
+
+  const limitClause = requestedLimit ? `LIMIT ${requestedLimit}` : '';
 
   // 1. Check for external client DB config
   let externalConfig = null;
@@ -91,25 +96,25 @@ const fetchTableRecords = async (tableName, orgId, projectId, options = {}) => {
           user,
           password,
           ssl: sslMode && sslMode !== 'disable' ? { rejectUnauthorized: false } : false,
-          connectionTimeoutMillis: 5000,
+          connectionTimeoutMillis: 10000,
         });
 
         await client.connect();
         try {
-          // Strictly pull in LIFO order (latest records first)
+          // Strictly pull in LIFO order (latest records first) or full table without artificial limits
           let res;
           try {
-            res = await client.query(`SELECT * FROM "${safeTable}" ORDER BY id DESC LIMIT ${requestedLimit}`);
+            res = await client.query(`SELECT * FROM "${safeTable}" ORDER BY id DESC ${limitClause}`.trim());
           } catch {
             try {
-              res = await client.query(`SELECT * FROM "${safeTable}" ORDER BY created_at DESC LIMIT ${requestedLimit}`);
+              res = await client.query(`SELECT * FROM "${safeTable}" ORDER BY created_at DESC ${limitClause}`.trim());
             } catch {
-              res = await client.query(`SELECT * FROM "${safeTable}" LIMIT ${requestedLimit}`);
-              if (res.rows && res.rows.length > 0) res.rows.reverse(); // Fallback LIFO reversal
+              res = await client.query(`SELECT * FROM "${safeTable}" ${limitClause}`.trim());
+              if (res.rows && res.rows.length > 0 && limitClause) res.rows.reverse(); // Fallback LIFO reversal if limited
             }
           }
           if (res.rows && res.rows.length > 0) {
-            logger.info(`[HourlyCampaignSync] Fetched ${res.rows.length} rows (LIFO order) from remote ${sourceInfo} table '${safeTable}'.`);
+            logger.info(`[HourlyCampaignSync] Fetched ${res.rows.length} rows from remote ${sourceInfo} table '${safeTable}'.`);
             return { rows: res.rows, sourceInfo };
           }
         } finally {
@@ -124,20 +129,20 @@ const fetchTableRecords = async (tableName, orgId, projectId, options = {}) => {
           user,
           password,
           ssl: sslMode && sslMode !== 'disable' ? { rejectUnauthorized: false } : undefined,
-          connectTimeout: 5000,
+          connectTimeout: 10000,
         });
 
         try {
           let rows;
           try {
-            const [r] = await conn.query(`SELECT * FROM \`${safeTable}\` ORDER BY id DESC LIMIT ${requestedLimit}`);
+            const [r] = await conn.query(`SELECT * FROM \`${safeTable}\` ORDER BY id DESC ${limitClause}`.trim());
             rows = r;
           } catch {
-            const [r] = await conn.query(`SELECT * FROM \`${safeTable}\` LIMIT ${requestedLimit}`);
-            rows = Array.isArray(r) ? r.reverse() : r;
+            const [r] = await conn.query(`SELECT * FROM \`${safeTable}\` ${limitClause}`.trim());
+            rows = Array.isArray(r) && limitClause ? r.reverse() : r;
           }
           if (Array.isArray(rows) && rows.length > 0) {
-            logger.info(`[HourlyCampaignSync] Fetched ${rows.length} rows (LIFO order) from remote MySQL ${sourceInfo} table '${safeTable}'.`);
+            logger.info(`[HourlyCampaignSync] Fetched ${rows.length} rows from remote MySQL ${sourceInfo} table '${safeTable}'.`);
             return { rows, sourceInfo };
           }
         } finally {
@@ -149,32 +154,41 @@ const fetchTableRecords = async (tableName, orgId, projectId, options = {}) => {
     }
   }
 
-  // 2. Check local PostgreSQL database (Strict LIFO order)
+  // 2. Check local PostgreSQL database (Full rows or requested limit)
   try {
     const hasLocalTable = await db.schema.hasTable(safeTable);
     if (hasLocalTable) {
       let localRows;
       try {
-        localRows = await db(safeTable).select('*').orderBy('id', 'desc').limit(requestedLimit);
+        let q = db(safeTable).select('*').orderBy('id', 'desc');
+        if (requestedLimit && requestedLimit > 0) q = q.limit(requestedLimit);
+        localRows = await q;
       } catch {
         try {
-          localRows = await db(safeTable).select('*').orderBy('created_at', 'desc').limit(requestedLimit);
+          let q = db(safeTable).select('*').orderBy('created_at', 'desc');
+          if (requestedLimit && requestedLimit > 0) q = q.limit(requestedLimit);
+          localRows = await q;
         } catch {
-          localRows = await db(safeTable).select('*').limit(requestedLimit);
-          if (Array.isArray(localRows)) localRows.reverse();
+          let q = db(safeTable).select('*');
+          if (requestedLimit && requestedLimit > 0) q = q.limit(requestedLimit);
+          localRows = await q;
+          if (Array.isArray(localRows) && requestedLimit) localRows.reverse();
         }
       }
-      logger.info(`[HourlyCampaignSync] Fetched ${localRows.length} rows (LIFO order) from local table '${safeTable}'.`);
+      logger.info(`[HourlyCampaignSync] Fetched ${localRows.length} rows from local table '${safeTable}'.`);
       return { rows: localRows, sourceInfo: `Local PostgreSQL table '${safeTable}'` };
     }
   } catch (localErr) {
     logger.warn(`[HourlyCampaignSync] Error querying local table '${safeTable}': ${localErr.message}`);
   }
 
-  // 3. Check mockStore fallback (Strict LIFO order)
+  // 3. Check mockStore fallback
   if (mockStore.data && Array.isArray(mockStore.data[safeTable])) {
-    const mockRows = [...mockStore.data[safeTable]].reverse().slice(0, requestedLimit);
-    return { rows: mockRows, sourceInfo: `MockStore table '${safeTable}' (LIFO)` };
+    let mockRows = [...mockStore.data[safeTable]].reverse();
+    if (requestedLimit && requestedLimit > 0) {
+      mockRows = mockRows.slice(0, requestedLimit);
+    }
+    return { rows: mockRows, sourceInfo: `MockStore table '${safeTable}'` };
   }
 
   // Table not found anywhere
@@ -293,6 +307,27 @@ const fetchTableTotalCount = async (tableName, orgId, projectId) => {
  * @returns {Promise<object>} Sync summary
  */
 const syncCampaignLeads = async (projectId, options = {}, tenantContext = {}) => {
+  if (!projectId) return { success: false, error: 'Project ID is required' };
+
+  // Mutex lock to prevent simultaneous duplicate pulls on the exact same campaign
+  if (activeSyncMutex.has(projectId)) {
+    logger.info(`[HourlyCampaignSync] Sync already running for campaign '${projectId}'. Awaiting active run.`);
+    return activeSyncMutex.get(projectId);
+  }
+
+  const syncPromise = (async () => {
+    try {
+      return await _executeSyncCampaignLeads(projectId, options, tenantContext);
+    } finally {
+      activeSyncMutex.delete(projectId);
+    }
+  })();
+
+  activeSyncMutex.set(projectId, syncPromise);
+  return syncPromise;
+};
+
+const _executeSyncCampaignLeads = async (projectId, options = {}, tenantContext = {}) => {
   const startTime = Date.now();
   const triggeredBy = options.triggeredBy || 'MANUAL_TRIGGER';
 
@@ -352,13 +387,24 @@ const syncCampaignLeads = async (projectId, options = {}, tenantContext = {}) =>
       const { rows: fetchedRows, sourceInfo } = tableData;
       const clientTableCount = Math.max(rawClientCount || 0, fetchedRows.length);
 
-      // 4. Fetch existing campaign_leads for strict deduplication
-      const existingLeads = await db('campaign_leads')
-        .where('project_id', projectId)
-        .select(['id', 'external_id', 'phone_number', 'metadata']);
+      // 4. Fetch existing campaign_leads and persistent campaign_synced_records for strict tracking
+      const [existingLeads, syncedRecords] = await Promise.all([
+        db('campaign_leads')
+          .where('project_id', projectId)
+          .select(['id', 'external_id', 'phone_number', 'metadata']),
+        db('campaign_synced_records')
+          .where('project_id', projectId)
+          .select(['external_id', 'phone_number'])
+          .catch(() => []),
+      ]);
 
       const existingSubmissionIds = new Set();
       const existingPhones = new Set();
+
+      for (const rec of (syncedRecords || [])) {
+        if (rec.external_id) existingSubmissionIds.add(String(rec.external_id).trim());
+        if (rec.phone_number) existingPhones.add(String(rec.phone_number).trim());
+      }
 
       for (const lead of existingLeads) {
         if (lead.external_id) {
@@ -499,6 +545,19 @@ const syncCampaignLeads = async (projectId, options = {}, tenantContext = {}) =>
       if (newLeads.length > 0) {
         await db.batchInsert('campaign_leads', newLeads, 500);
         logger.info(`[HourlyCampaignSync] Inserted ${newLeads.length} new leads into campaign_leads for campaign '${projectId}'.`);
+
+        // Record into campaign_synced_records for permanent tracking
+        try {
+          const syncTrackingRows = newLeads.map((nl) => ({
+            id: uuidv4(),
+            project_id: projectId,
+            external_id: nl.external_id,
+            source_table: tableName,
+            phone_number: nl.phone_number,
+            synced_at: now,
+          }));
+          await db.batchInsert('campaign_synced_records', syncTrackingRows, 500).catch(() => null);
+        } catch (_) {}
 
         // Check if submissions table exists and insert missing submissions
         try {
