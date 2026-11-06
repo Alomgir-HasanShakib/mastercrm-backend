@@ -977,12 +977,13 @@ const reportsService = {
       const total = parseInt(statsRow?.total || 0, 10);
       const completed = parseInt(statsRow?.completed || 0, 10);
       const incomplete = Math.max(0, total - completed);
-      const pushed = completed; // Per user rule: pushed count matches completed audits
+      // Pushed count tracks records pushed to the client database; 0 until actual push execution occurs
+      const pushed = 0;
 
       const todayTotal = parseInt(statsRow?.today_total || 0, 10);
       const todayCompleted = parseInt(statsRow?.today_completed || 0, 10);
       const todayIncomplete = Math.max(0, todayTotal - todayCompleted);
-      const todayPushed = todayCompleted;
+      const todayPushed = 0;
 
       // Batch slots: ONLY query and return if search is explicitly requested
       let batchReport = [];
@@ -1028,7 +1029,7 @@ const reportsService = {
             receivedCount: rec,
             auditedCount: aud,
             remainingCount: Math.max(0, rec - aud),
-            pushedCount: aud,
+            pushedCount: 0,
           };
         });
       }
