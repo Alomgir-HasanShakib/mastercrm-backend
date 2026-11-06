@@ -992,12 +992,12 @@ const reportsService = {
         let dateFilterClause = '';
         const filterBindings = [...modProjectIds];
         if (params.dateFrom) {
-          dateFilterClause += " AND (created_at >= ? OR (metadata->>'batch_slot')::timestamp >= ?)";
-          filterBindings.push(params.dateFrom, params.dateFrom);
+          dateFilterClause += " AND COALESCE(NULLIF(metadata->>'batch_slot', '')::timestamptz, created_at) >= ?::timestamptz";
+          filterBindings.push(params.dateFrom + ' 00:00:00');
         }
         if (params.dateTo) {
-          dateFilterClause += " AND (created_at <= ? OR (metadata->>'batch_slot')::timestamp <= ?)";
-          filterBindings.push(params.dateTo + ' 23:59:59', params.dateTo + ' 23:59:59');
+          dateFilterClause += " AND COALESCE(NULLIF(metadata->>'batch_slot', '')::timestamptz, created_at) <= ?::timestamptz";
+          filterBindings.push(params.dateTo + ' 23:59:59');
         }
 
         const rawSlotQuery = `
