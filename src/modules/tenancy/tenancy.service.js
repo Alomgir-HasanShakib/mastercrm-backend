@@ -873,9 +873,9 @@ const createProject = async (data, tenantContext = {}) => {
         await superAuditTables.ensureDynamicTables(inputTbl, out1Tbl, out2Tbl);
       }
 
-      // Auto-pull data from client table immediately upon campaign creation
+      // Auto-pull data from client table immediately upon campaign creation so all data is ready
       const hourlySyncService = require('../../services/hourlyCampaignSync.service');
-      hourlySyncService.syncCampaignLeads(
+      await hourlySyncService.syncCampaignLeads(
         projectRecord.id,
         { tableName: inputTbl, triggeredBy: 'CAMPAIGN_CREATE' },
         { organizationId, isMasterAdmin: !!tenantContext.isMasterAdmin }

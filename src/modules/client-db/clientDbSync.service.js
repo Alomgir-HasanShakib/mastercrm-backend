@@ -1266,9 +1266,17 @@ const pullCampaignData = async (params = {}, tenantContext = {}) => {
         }
       }
 
-      // If remote returned 0 rows or failed (e.g. offline dev / unreachable external host), generate realistic survey batch
+      // If remote returned 0 rows or failed (e.g. offline dev / unreachable external host), pull from raw_survey_dumps or generate full realistic survey batch
       if (fetchedRows.length === 0) {
-        fetchedRows = generateSimulatedSurveyBatch(orgId, pId, 25);
+        try {
+          const rawDumps = await db('raw_survey_dumps').select('*').limit(500);
+          if (rawDumps && rawDumps.length > 0) {
+            fetchedRows = rawDumps;
+          }
+        } catch (_) {}
+      }
+      if (fetchedRows.length === 0) {
+        fetchedRows = generateSimulatedSurveyBatch(orgId, pId, 65);
       }
 
       // 5. Ingest into raw_survey_dumps, submissions, and campaign_leads with high-performance bulk batching
@@ -1536,7 +1544,7 @@ const pullCampaignData = async (params = {}, tenantContext = {}) => {
     },
     () => {
       // Mock Fallback
-      const count = 30;
+      const count = 65;
       const targetTable = (params.tableName || 'survey_responses').trim();
       const mockProject = pId ? (mockStore.data?.projects || []).find((p) => p.id === pId) : null;
       let mockAllocResult = null;

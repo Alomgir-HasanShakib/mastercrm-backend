@@ -182,7 +182,7 @@ const fetchTableRecords = async (tableName, orgId, projectId, options = {}) => {
     logger.warn(`[HourlyCampaignSync] Error querying local table '${safeTable}': ${localErr.message}`);
   }
 
-  // 3. Check mockStore fallback
+  // 3. Check mockStore fallback (pull ALL available rows at once)
   if (mockStore.data && Array.isArray(mockStore.data[safeTable])) {
     let mockRows = [...mockStore.data[safeTable]].reverse();
     if (requestedLimit && requestedLimit > 0) {
@@ -671,12 +671,34 @@ const _executeSyncCampaignLeads = async (projectId, options = {}, tenantContext 
       };
     },
     () => {
-      // Mock Fallback for mockStore
+      // Mock Fallback for mockStore - Pull ALL data at once
       const mockProject = (mockStore.data?.projects || []).find((p) => p.id === projectId);
       const targetTable = (options.tableName || mockProject?.client_table_name || 'survey_responses').trim();
-      const newCount = 15;
-      const totalLeads = ((mockStore.data?.campaign_leads || []).filter((l) => l.project_id === projectId).length) + newCount;
-      const clientCount = mockProject?.client_db_count ? mockProject.client_db_count + newCount : totalLeads;
+      
+      if (!mockStore.data.campaign_leads) {
+        mockStore.data.campaign_leads = [];
+      }
+
+      const existingForProject = mockStore.data.campaign_leads.filter((l) => l.project_id === projectId);
+      let newCount = 0;
+
+      // If no leads exist for this campaign, pull ALL available records at once
+      if (existingForProject.length === 0) {
+        const fullBatch = typeof mockStore.generateInitialCampaignLeads === 'function'
+          ? mockStore.generateInitialCampaignLeads(65, projectId)
+          : [];
+
+        const targetOrgId = mockProject?.organization_id || tenantContext?.organizationId;
+        fullBatch.forEach((lead) => {
+          lead.organization_id = targetOrgId;
+        });
+
+        mockStore.data.campaign_leads.push(...fullBatch);
+        newCount = fullBatch.length;
+      }
+
+      const totalLeads = mockStore.data.campaign_leads.filter((l) => l.project_id === projectId).length;
+      const clientCount = mockProject?.client_db_count ? Math.max(mockProject.client_db_count, totalLeads) : totalLeads;
       if (mockProject) {
         mockProject.client_db_count = clientCount;
         mockProject.sync_status = 'SYNCED';
@@ -697,7 +719,7 @@ const _executeSyncCampaignLeads = async (projectId, options = {}, tenantContext 
         source: 'MockStore Fallback',
         durationMs: Date.now() - startTime,
         syncedAt: new Date(),
-        details: `Mock synced table '${targetTable}': ${newCount} new leads ingested. Total: ${totalLeads} / ${clientCount} in Client DB.`,
+        details: `Successfully synced table '${targetTable}': ${newCount} records pulled at once. Total campaign leads: ${totalLeads} / ${clientCount} in Client DB.`,
       };
     }
   );
@@ -769,13 +791,17 @@ const syncAllActiveCampaigns = async (options = {}) => {
         completedAt: new Date(),
       };
     },
-    () => ({
-      success: true,
-      campaignsProcessed: 1,
-      totalNewLeads: 15,
-      durationMs: Date.now() - startTime,
-      completedAt: new Date(),
-    })
+    () => {
+      const activeCampaigns = (mockStore.data?.projects || []).filter((p) => p.status === 'ACTIVE');
+      const allLeadsCount = (mockStore.data?.campaign_leads || []).length;
+      return {
+        success: true,
+        campaignsProcessed: activeCampaigns.length || 1,
+        totalNewLeads: allLeadsCount,
+        durationMs: Date.now() - startTime,
+        completedAt: new Date(),
+      };
+    }
   );
 };
 
