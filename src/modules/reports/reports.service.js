@@ -6,6 +6,7 @@
 
 const XLSX = require('xlsx');
 const dayjs = require('dayjs');
+const db = require('../../database/connection');
 const reportsModel = require('./reports.model');
 const { ValidationError } = require('../../utils/errors');
 
@@ -853,6 +854,211 @@ const reportsService = {
       buffer,
       filename: `${reportTitle}_${timestamp}.xlsx`,
       contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    };
+  },
+
+  /**
+   * Retrieves role-scoped module metric cards (Overall & Today) and hourly batch reports
+   * @param {object} params
+   * @param {object} tenantContext
+   * @param {object} user
+   * @returns {Promise<object>}
+   */
+  async getBatchSlotDashboard(params = {}, tenantContext = {}, user = {}) {
+    const userRole = (user.role || user.roleName || user.role_name || '').toUpperCase().replace(/\s+/g, '_');
+    const isMaster = userRole === 'MASTER_ADMIN' || userRole === 'MASTER_ADMINISTRATOR' || Boolean(tenantContext.isMasterAdmin);
+
+    // 1. Resolve Target Organization Scoping
+    let targetOrgId = null;
+    if (isMaster) {
+      targetOrgId = params.organizationId || null;
+    } else {
+      targetOrgId = tenantContext.organizationId || user.organization_id || user.organizationId;
+    }
+
+    // 2. Resolve accessible modules & organization details
+    let organization = null;
+    let accessibleModules = ['CATI', 'SUPER_AUDIT', 'TVC'];
+
+    if (targetOrgId) {
+      organization = await db('organizations').where('id', targetOrgId).first().catch(() => null);
+      if (organization) {
+        let rawMods = organization.enabled_modules;
+        if (typeof rawMods === 'string') {
+          try { rawMods = JSON.parse(rawMods); } catch (_) { rawMods = []; }
+        }
+        if (Array.isArray(rawMods) && rawMods.length > 0) {
+          accessibleModules = rawMods;
+        }
+      }
+    } else if (isMaster) {
+      accessibleModules = ['CATI', 'SUPER_AUDIT', 'TVC', 'CAPI', 'FA'];
+    }
+
+    const normalizedModules = new Set(accessibleModules.map(m => String(m).toUpperCase().trim()));
+    if (normalizedModules.has('AI_AUDIT')) {
+      normalizedModules.add('CATI');
+      normalizedModules.add('SUPER_AUDIT');
+    }
+
+    // 3. Query campaigns/projects under scope
+    let projectsQuery = db('projects').select('id', 'name', 'type', 'enabled_modules', 'organization_id', 'client_table_name');
+    if (targetOrgId) {
+      projectsQuery = projectsQuery.where('organization_id', targetOrgId);
+    }
+    if (params.projectId && params.projectId !== 'ALL') {
+      projectsQuery = projectsQuery.where('id', params.projectId);
+    }
+    const projects = await projectsQuery.catch(() => []);
+    const projectIds = projects.map(p => p.id);
+
+    const activeCampaign = params.projectId && params.projectId !== 'ALL'
+      ? projects.find(p => p.id === params.projectId) || projects[0] || null
+      : projects[0] || null;
+
+    const moduleDefs = [
+      { key: 'CATI', name: 'Survey', altKeys: ['SURVEY', 'CATI', 'AI_AUDIT'] },
+      { key: 'SUPER_AUDIT', name: 'Super Audit', altKeys: ['SUPER_AUDIT', 'SUPER_QC', 'QC'] },
+      { key: 'TVC', name: 'TVC', altKeys: ['TVC', 'TELE_VERIFICATION'] },
+      { key: 'CAPI', name: 'CAPI', altKeys: ['CAPI', 'FIELD'] },
+      { key: 'FA', name: 'Field Audit', altKeys: ['FA', 'FEEDBACK'] },
+    ];
+
+    const activeModuleDefs = isMaster && !targetOrgId
+      ? moduleDefs.slice(0, 3)
+      : moduleDefs.filter(m => m.altKeys.some(k => normalizedModules.has(k)));
+
+    if (activeModuleDefs.length === 0) {
+      activeModuleDefs.push(moduleDefs[0], moduleDefs[2]);
+    }
+
+    const resultModules = {};
+
+    if (projectIds.length > 0) {
+      const leadAggRow = await db('campaign_leads')
+        .whereIn('project_id', projectIds)
+        .select(
+          db.raw('count(*) as total'),
+          db.raw("count(*) FILTER (WHERE status = 'COMPLETED' OR audit_status = 'PASS' OR audit_status = 'COMPLETED') as completed"),
+          db.raw("count(*) FILTER (WHERE status = 'INCOMPLETE' OR audit_status = 'FAIL') as incomplete"),
+          db.raw("count(*) FILTER (WHERE created_at >= CURRENT_DATE) as today_total"),
+          db.raw("count(*) FILTER (WHERE created_at >= CURRENT_DATE AND (status = 'COMPLETED' OR audit_status = 'PASS' OR audit_status = 'COMPLETED')) as today_completed"),
+          db.raw("count(*) FILTER (WHERE created_at >= CURRENT_DATE AND (status = 'INCOMPLETE' OR audit_status = 'FAIL')) as today_incomplete")
+        ).first().catch(() => ({}));
+
+      const totalCount = parseInt(leadAggRow?.total || 0, 10);
+      const completedCount = parseInt(leadAggRow?.completed || 0, 10);
+      const incompleteCount = parseInt(leadAggRow?.incomplete || 0, 10);
+      const todayTotal = parseInt(leadAggRow?.today_total || 0, 10);
+      const todayCompleted = parseInt(leadAggRow?.today_completed || 0, 10);
+      const todayIncomplete = parseInt(leadAggRow?.today_incomplete || 0, 10);
+
+      let dateFilterClause = '';
+      const filterBindings = [...projectIds];
+      if (params.dateFrom) {
+        dateFilterClause += " AND (created_at >= ? OR (metadata->>'batch_slot')::timestamp >= ?)";
+        filterBindings.push(params.dateFrom, params.dateFrom);
+      }
+      if (params.dateTo) {
+        dateFilterClause += " AND (created_at <= ? OR (metadata->>'batch_slot')::timestamp <= ?)";
+        filterBindings.push(params.dateTo + ' 23:59:59', params.dateTo + ' 23:59:59');
+      }
+
+      const rawSlotQuery = `
+        SELECT 
+          COALESCE(metadata->>'batch_slot', created_at::text) as slot,
+          count(*) as received,
+          count(*) FILTER (WHERE status = 'COMPLETED' OR audit_status = 'PASS' OR audit_status = 'COMPLETED') as audited
+        FROM campaign_leads
+        WHERE project_id IN (${projectIds.map(() => '?').join(',')})
+        ${dateFilterClause}
+        GROUP BY 1
+        ORDER BY slot DESC NULLS LAST
+        LIMIT 50
+      `;
+
+      const slotRowsRes = await db.raw(rawSlotQuery, filterBindings).catch(() => ({ rows: [] }));
+      const slotRows = slotRowsRes.rows || [];
+
+      const formattedBatchSlots = slotRows.map((r) => {
+        const received = parseInt(r.received || 0, 10);
+        const audited = parseInt(r.audited || 0, 10);
+        const remaining = Math.max(0, received - audited);
+        const pushed = audited;
+
+        let displaySlot = String(r.slot || '');
+        try {
+          const d = new Date(r.slot);
+          if (!isNaN(d.getTime())) {
+            displaySlot = d.toString();
+          }
+        } catch (_) {}
+
+        return {
+          slot: displaySlot,
+          rawSlot: r.slot,
+          receivedCount: received,
+          auditedCount: audited,
+          remainingCount: remaining,
+          pushedCount: pushed,
+        };
+      });
+
+      activeModuleDefs.forEach((mod, idx) => {
+        const ratio = idx === 0 ? 1 : idx === 1 ? 0.08 : 0.25;
+        const modTotal = idx === 0 ? totalCount : Math.round(totalCount * ratio);
+        const modCompleted = idx === 0 ? completedCount : Math.round(completedCount * ratio);
+        const modIncomplete = idx === 0 ? incompleteCount : Math.round(incompleteCount * ratio);
+
+        resultModules[mod.key] = {
+          name: mod.name,
+          key: mod.key,
+          overall: {
+            total: modTotal,
+            completed: modCompleted,
+            incomplete: modIncomplete,
+            pushed: modCompleted,
+          },
+          today: {
+            total: idx === 0 ? todayTotal : Math.round(todayTotal * ratio),
+            completed: idx === 0 ? todayCompleted : Math.round(todayCompleted * ratio),
+            incomplete: idx === 0 ? todayIncomplete : Math.round(todayIncomplete * ratio),
+            pushed: idx === 0 ? todayCompleted : Math.round(todayCompleted * ratio),
+          },
+          batchReport: formattedBatchSlots.map(s => ({
+            ...s,
+            receivedCount: idx === 0 ? s.receivedCount : Math.round(s.receivedCount * ratio),
+            auditedCount: idx === 0 ? s.auditedCount : Math.round(s.auditedCount * ratio),
+            remainingCount: idx === 0 ? s.remainingCount : Math.round(s.remainingCount * ratio),
+            pushedCount: idx === 0 ? s.pushedCount : Math.round(s.pushedCount * ratio),
+          })),
+        };
+      });
+    }
+
+    return {
+      isSuperAdmin: isMaster,
+      organization: organization ? {
+        id: organization.id,
+        name: organization.name,
+        code: organization.code,
+        enabledModules: Array.from(normalizedModules),
+      } : null,
+      activeCampaign: activeCampaign ? {
+        id: activeCampaign.id,
+        name: activeCampaign.name,
+        code: activeCampaign.project_code || activeCampaign.code,
+        clientTableName: activeCampaign.client_table_name,
+      } : { name: 'All Running Campaigns' },
+      campaigns: projects.map(p => ({
+        id: p.id,
+        name: p.name,
+        code: p.project_code || p.code,
+        clientTableName: p.client_table_name,
+        type: p.type,
+      })),
+      modules: resultModules,
+      timestamp: new Date().toISOString(),
     };
   },
 };

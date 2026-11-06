@@ -18,6 +18,17 @@ const router = express.Router();
 router.use(authenticate, setTenantContext);
 
 /**
+ * @route GET /api/v1/reports/batch-dashboard
+ * @desc Retrieve role-scoped module metric cards (Overall & Today) and hourly batch reports
+ * @access Authenticated (reports:read)
+ */
+router.get(
+  '/batch-dashboard',
+  checkPermission('reports', 'read'),
+  reportsController.getBatchDashboard
+);
+
+/**
  * @route GET /api/v1/reports/dashboard-summary
  * @desc Retrieve executive KPI dashboard summary across modules
  * @access Authenticated (reports:read)

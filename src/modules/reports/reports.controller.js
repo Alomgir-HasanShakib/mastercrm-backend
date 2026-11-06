@@ -270,6 +270,19 @@ const reportsController = {
   },
 
   /**
+   * GET /batch-dashboard
+   * Role-scoped module metric cards (Overall & Today) and hourly batch reports
+   */
+  async getBatchDashboard(req, res, next) {
+    try {
+      const data = await reportsService.getBatchSlotDashboard(req.query, req.tenantContext, req.user);
+      return success(res, data, 'Batch slot dashboard retrieved successfully');
+    } catch (err) {
+      return next(err);
+    }
+  },
+
+  /**
    * GET /cati
    * Alias for CATI Production Report
    */
