@@ -28,6 +28,10 @@ let overrideState = {
  * @returns {boolean} True if outside operating window (19:00 IST to 08:00 IST next morning)
  */
 function isPast7PmIst() {
+  const config = require('../../config');
+  if (config.app?.env !== 'production') {
+    return false;
+  }
   const now = new Date();
   const istString = now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour12: false });
   const match = istString.match(/(\d+):(\d+):(\d+)/);

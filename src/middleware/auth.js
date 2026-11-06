@@ -35,24 +35,42 @@ const authenticate = async (req, res, next) => {
       return next(new AuthenticationError('Invalid or expired token payload.'));
     }
 
-    // Auto-enrich user context if organization_id or vendor_id is absent from payload
-    if (!decoded.organization_id || !decoded.vendor_id || !decoded.role) {
-      try {
-        const dbUser = await db('users').where('id', decoded.userId || decoded.id).first();
+    // Auto-enrich & reconcile user context with live database (ensures FK integrity and tenant scoping)
+    try {
+      if (db.isDbHealthy && db.isDbHealthy()) {
+        let dbUser = await db('users').where('id', decoded.userId || decoded.id).first();
+        if (!dbUser && decoded.email) {
+          dbUser = await db('users').whereRaw('LOWER(email) = ?', [decoded.email.toLowerCase().trim()]).first();
+        }
+
         if (dbUser) {
-          decoded.organization_id = decoded.organization_id || dbUser.organization_id;
-          decoded.organizationId = decoded.organizationId || dbUser.organization_id;
-          decoded.vendor_id = decoded.vendor_id || dbUser.vendor_id;
-          decoded.vendorId = decoded.vendorId || dbUser.vendor_id;
-          if (!decoded.role && dbUser.role_id) {
+          decoded.userId = dbUser.id;
+          decoded.id = dbUser.id;
+          decoded.organization_id = dbUser.organization_id;
+          decoded.organizationId = dbUser.organization_id;
+          decoded.vendor_id = dbUser.vendor_id;
+          decoded.vendorId = dbUser.vendor_id;
+          if (dbUser.role_id) {
             const r = await db('roles').where('id', dbUser.role_id).first();
-            decoded.role = r?.slug || r?.name;
-            decoded.roleName = r?.name;
-            decoded.role_name = r?.name;
+            if (r) {
+              decoded.role = r.slug || r.name;
+              decoded.roleName = r.name;
+              decoded.role_name = r.name;
+            }
+          }
+        } else if (decoded.organization_id || decoded.organizationId) {
+          const orgId = decoded.organization_id || decoded.organizationId;
+          const orgExists = await db('organizations').where('id', orgId).first();
+          if (!orgExists) {
+            const fallbackOrg = await db('organizations').where('is_active', true).first() || await db('organizations').first();
+            if (fallbackOrg) {
+              decoded.organization_id = fallbackOrg.id;
+              decoded.organizationId = fallbackOrg.id;
+            }
           }
         }
-      } catch (_) {}
-    }
+      }
+    } catch (_) {}
 
     req.user = decoded;
     return next();

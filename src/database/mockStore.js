@@ -2276,9 +2276,9 @@ const store = {
     {
       id: 'cfg-default-01',
       organization_id: ORG_ID,
-      name: 'Organization Primary PostgreSQL',
+      name: 'Organization Primary PostgreSQL (Local)',
       db_type: 'POSTGRES',
-      connection_string: 'postgresql://reflect_owner:***@ep-orange-hall-a5k6qfw8-pooler.us-east-2.aws.neon.tech:5432/crm?sslmode=require',
+      connection_string: 'postgresql://telekyo:telekyo_local_123@localhost:5432/telekyo',
       api_url: null,
       api_token: null,
       sync_interval: '15_MIN',
@@ -2289,11 +2289,12 @@ const store = {
       last_error: null,
       mapping_config: {
         dbConfig: {
-          host: 'ep-orange-hall-a5k6qfw8-pooler.us-east-2.aws.neon.tech',
+          host: 'localhost',
           port: 5432,
-          database: 'crm',
-          user: 'reflect_owner',
-          sslMode: 'require',
+          database: 'telekyo',
+          user: 'telekyo',
+          password: 'telekyo_local_123',
+          sslMode: 'disable',
           dbType: 'POSTGRES',
         },
       },
@@ -2603,6 +2604,7 @@ function applyPagination(items, pagination = {}) {
 
 const mockStore = {
   data: store,
+  generateInitialCampaignLeads,
 
   find(collectionName, filters = {}, pagination = {}) {
     const items = store[collectionName] || [];
@@ -3863,19 +3865,57 @@ const mockStore = {
       return lead;
     }
 
+    const existingMeta = typeof lead.metadata === 'object' && lead.metadata !== null ? lead.metadata : JSON.parse(lead.metadata || '{}');
+    const outData = surveyData.outputData || {};
+    const auditStatus = (outData.audit_status || outData.decision || 'COMPLETED').toUpperCase();
+
     lead.status = 'COMPLETED';
-    lead.audit_status = (surveyData.outputData?.audit_status || 'COMPLETED').toUpperCase();
+    lead.audit_status = auditStatus;
     lead.locked_by_auditor = null;
     lead.surveyed_at = new Date();
     lead.updated_at = new Date();
     lead.assigned_agent_id = userContext.userId || userContext.id || null;
     lead.metadata = JSON.stringify({
-      ...JSON.parse(lead.metadata || '{}'),
+      ...existingMeta,
       surveyResponses: surveyData.responses || {},
+      duration: outData.duration || outData.audio_duration || lead.duration || 180,
+      audio_duration: outData.duration || outData.audio_duration || lead.duration || 180,
+      survey_start_time: outData.survey_start_time || new Date().toISOString(),
+      survey_end_time: outData.survey_end_time || new Date().toISOString(),
+      completion_time: outData.completion_time || new Date().toISOString(),
+      outputData: {
+        ...outData,
+        pushed: 0,
+      },
       completedBy: userContext.email || 'agent',
-      audit_status: (surveyData.outputData?.audit_status || 'COMPLETED').toUpperCase(),
+      audit_status: auditStatus,
       locked_by_auditor: null,
     });
+
+    // Synchronize to Output 2 table in exact 128-column format from test.csv
+    try {
+      const capiOutput2Formatter = require('../modules/capi/capiOutput2Formatter');
+      const out2Row = capiOutput2Formatter.formatLeadToOutput2Row(
+        lead,
+        {
+          decision: auditStatus,
+          score: outData.score,
+          duration: outData.duration || lead.duration,
+          audioDuration: outData.audio_duration,
+          survey_start_time: outData.survey_start_time,
+          survey_end_time: outData.survey_end_time,
+          completion_time: outData.completion_time,
+          audioDisposition: outData.audio_disposition,
+          feedback: outData.remarks,
+          items: surveyData.responses || [],
+        },
+        {
+          email: userContext.email || 'agent@crm.local',
+          id: userContext.userId || userContext.id,
+        }
+      );
+      capiOutput2Formatter.syncOutput2Table('mh_zone_audit_output_r1_2', out2Row);
+    } catch (_) {}
 
     return lead;
   },

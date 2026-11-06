@@ -9,17 +9,27 @@ const config = require('./index');
 /**
  * Knex configuration object for development, test, and production.
  */
+const getConnection = () => {
+  if (config.db.connectionString) {
+    return {
+      connectionString: config.db.connectionString,
+      ssl: config.db.ssl ? { rejectUnauthorized: false } : false,
+    };
+  }
+  return {
+    host: config.db.host,
+    port: config.db.port,
+    database: config.db.database,
+    user: config.db.user,
+    password: config.db.password,
+    ssl: config.db.ssl ? { rejectUnauthorized: false } : false,
+  };
+};
+
 const databaseConfig = {
   development: {
     client: 'pg',
-    connection: {
-      host: config.db.host,
-      port: config.db.port,
-      database: config.db.database,
-      user: config.db.user,
-      password: config.db.password,
-      ssl: config.db.ssl ? { rejectUnauthorized: false } : false,
-    },
+    connection: getConnection(),
     pool: {
       min: config.db.poolMin,
       max: config.db.poolMax,
@@ -59,14 +69,7 @@ const databaseConfig = {
 
   production: {
     client: 'pg',
-    connection: {
-      host: config.db.host,
-      port: config.db.port,
-      database: config.db.database,
-      user: config.db.user,
-      password: config.db.password,
-      ssl: config.db.ssl ? { rejectUnauthorized: false } : false,
-    },
+    connection: getConnection(),
     pool: {
       min: config.db.poolMin,
       max: config.db.poolMax,

@@ -226,6 +226,11 @@ const capiController = {
         projectId = null;
       }
       if (!projectId) {
+        const mockStore = require('../../database/mockStore');
+        const activeProjects = (mockStore.data?.projects || []);
+        projectId = activeProjects[0]?.id || null;
+      }
+      if (!projectId) {
         return success(res, null, 'Please select a campaign to fetch pending audits');
       }
       const ac = req.query?.ac || req.body?.ac || req.query?.constituency || null;

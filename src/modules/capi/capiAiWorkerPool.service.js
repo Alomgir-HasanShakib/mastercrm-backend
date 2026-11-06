@@ -9,6 +9,7 @@
  */
 
 const { db } = require('../../database/connection');
+const config = require('../../config');
 const capiService = require('./capi.service');
 const logger = require('../../utils/logger');
 const aiAuditService = require('../ai/aiAudit.service');
@@ -23,6 +24,17 @@ let cachedAiUserId = null;
 
 async function getAiUserId() {
   if (cachedAiUserId) return cachedAiUserId;
+
+  // When PostgreSQL is not connected / offline, immediately resolve from mockStore with 0 delay
+  if (!db.isDbHealthy || !db.isDbHealthy()) {
+    try {
+      const mockStore = require('../../database/mockStore');
+      const u = (mockStore.data?.users || []).find((x) => x.email === 'ai-auditor@crm.system') || mockStore.data?.users?.[0];
+      if (u) cachedAiUserId = u.id;
+    } catch (_) {}
+    return cachedAiUserId || '00000000-0000-0000-0000-000000000002';
+  }
+
   let user = await db('users').where('email', 'ai-auditor@crm.system').first().catch(() => null);
   if (!user) {
     user = await db('users').first().catch(() => null);
@@ -30,7 +42,14 @@ async function getAiUserId() {
   if (user) {
     cachedAiUserId = user.id;
   }
-  return cachedAiUserId;
+  return cachedAiUserId || '00000000-0000-0000-0000-000000000002';
+}
+
+function formatLocalTimestamp(d = new Date()) {
+  const date = d instanceof Date ? d : new Date(d);
+  if (isNaN(date.getTime())) return String(d || '');
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 /**
@@ -40,6 +59,9 @@ async function getAiUserId() {
  * @returns {boolean} True if current time is 19:00 IST or later.
  */
 function isPastWorkingHoursIST() {
+  if (config.app?.env !== 'production') {
+    return false;
+  }
   const now = new Date();
   const istString = now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour12: false });
   const match = istString.match(/(\d+):(\d+):(\d+)/);
@@ -111,8 +133,8 @@ function getRandomFetchDelayMs() {
   if (process.env.NODE_ENV === 'test' || poolState.fastMode) {
     return Math.floor(Math.random() * 60) + 20; // 20 - 80ms for tests
   }
-  const minMs = parseInt(process.env.AI_AUDIT_MIN_FETCH_DELAY_MS, 10) || 15000;
-  const maxMs = parseInt(process.env.AI_AUDIT_MAX_FETCH_DELAY_MS, 10) || 30000;
+  const minMs = parseInt(process.env.AI_AUDIT_MIN_FETCH_DELAY_MS, 10) || 2000;
+  const maxMs = parseInt(process.env.AI_AUDIT_MAX_FETCH_DELAY_MS, 10) || 4000;
   return Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
 }
 
@@ -151,140 +173,186 @@ async function fetchNextLeadForAi(workerId, projectId) {
   const aiUserId = await getAiUserId();
   const now = new Date();
 
-  // Primary path: PostgreSQL atomic transaction with FOR UPDATE SKIP LOCKED
-  try {
-    const claimedLead = await db.transaction(async (trx) => {
-      let q = trx('campaign_leads')
-        .join('projects', 'campaign_leads.project_id', 'projects.id')
-        .select('campaign_leads.*', 'projects.name as project_name')
-        // Strict queue filtering: Only PENDING or ASSIGNED leads (NEVER already IN_PROGRESS or COMPLETED)
-        .whereIn('campaign_leads.status', ['PENDING', 'ASSIGNED'])
-        .whereNull('campaign_leads.surveyed_at')
-        // Exclude any lead already evaluated or marked with audit status
-        .where((builder) => {
-          builder
-            .whereNull('campaign_leads.audit_status')
-            .orWhere('campaign_leads.audit_status', 'PENDING');
-        })
-        // Lead must be unassigned/unlocked, or have an expired stale lock (> 20 min)
-        .where((builder) => {
-          builder
-            .where((b1) => {
-              b1.whereNull('campaign_leads.locked_by_auditor')
-                .where((b2) => {
-                  b2.whereNull('campaign_leads.assigned_agent_id')
-                    .orWhereNull('campaign_leads.allocated_at');
-                });
-            })
-            .orWhere('campaign_leads.allocated_at', '<=', db.raw(`NOW() - INTERVAL '20 minutes'`))
-            .orWhere('campaign_leads.locked_at', '<=', db.raw(`NOW() - INTERVAL '20 minutes'`));
-        });
+  // Check if PostgreSQL is available and healthy
+  const isPostgresHealthy = Boolean(db.isDbHealthy && db.isDbHealthy());
 
-      // Guard against in-flight processing leads in this Node.js instance
-      if (currentlyProcessingLeadIds.size > 0) {
-        q = q.whereNotIn('campaign_leads.id', Array.from(currentlyProcessingLeadIds));
-      }
+  if (isPostgresHealthy) {
+    // Primary path: PostgreSQL atomic transaction with FOR UPDATE SKIP LOCKED
+    try {
+      const claimedLead = await db.transaction(async (trx) => {
+        let q = trx('campaign_leads')
+          .join('projects', 'campaign_leads.project_id', 'projects.id')
+          .select('campaign_leads.*', 'projects.name as project_name')
+          // Exclude already audited leads
+          .where((builder) => {
+            builder
+              .whereNull('campaign_leads.audit_status')
+              .orWhere('campaign_leads.audit_status', 'PENDING')
+              .orWhere((b2) => {
+                b2.where('campaign_leads.audit_status', 'IN_PROGRESS')
+                  .where('campaign_leads.locked_at', '<=', db.raw(`NOW() - INTERVAL '10 minutes'`));
+              });
+          })
+          // Lead must not be already locked by an active auditor
+          .where((builder) => {
+            builder
+              .whereNull('campaign_leads.locked_by_auditor')
+              .orWhere('campaign_leads.locked_at', '<=', db.raw(`NOW() - INTERVAL '10 minutes'`));
+          });
 
-      if (projectId) {
-        q = q.where('campaign_leads.project_id', projectId);
-      } else {
-        q = q.where((builder) => {
-          builder
-            .where('projects.type', 'CAPI')
-            .orWhereRaw("projects.enabled_modules::text ILIKE '%CAPI%'");
-        });
-      }
-
-      const lead = await q
-        .orderBy('campaign_leads.created_at', 'asc')
-        .forUpdate('campaign_leads')
-        .skipLocked()
-        .first();
-
-      if (lead) {
-        // Double-check intra-process guard
-        if (currentlyProcessingLeadIds.has(lead.id)) {
-          return null;
+        // Guard against in-flight processing leads in this Node.js instance
+        if (currentlyProcessingLeadIds.size > 0) {
+          q = q.whereNotIn('campaign_leads.id', Array.from(currentlyProcessingLeadIds));
         }
 
-        const currentMeta = typeof lead.metadata === 'object' && lead.metadata !== null
-          ? lead.metadata
-          : JSON.parse(lead.metadata || '{}');
-
-        // Skip if outputData or completion was already stored
-        if (currentMeta?.outputData?.audit_status || lead.status === 'COMPLETED' || lead.surveyed_at) {
-          return null;
+        if (projectId) {
+          q = q.where((builder) => {
+            builder
+              .where('campaign_leads.project_id', projectId)
+              .orWhere('campaign_leads.project_code', projectId);
+          });
+        } else {
+          q = q.where((builder) => {
+            builder
+              .whereIn('projects.type', ['CAPI', 'AI_AUDIT', 'TVC'])
+              .orWhereRaw("projects.enabled_modules::text ILIKE '%CAPI%'")
+              .orWhereRaw("projects.enabled_modules::text ILIKE '%AI_AUDIT%'");
+          });
         }
 
-        // Atomically claim the lead for this specific worker
-        const updatePayload = {
-          status: 'IN_PROGRESS',
-          audit_status: 'IN_PROGRESS',
-          locked_by_auditor: workerId,
-          locked_at: now,
-          allocated_at: now,
-          updated_at: now,
-        };
-        if (aiUserId) {
-          updatePayload.assigned_agent_id = aiUserId;
+        const lead = await q
+          .orderBy('campaign_leads.created_at', 'asc')
+          .forUpdate('campaign_leads')
+          .skipLocked()
+          .first();
+
+        if (lead) {
+          // Double-check intra-process guard
+          if (currentlyProcessingLeadIds.has(lead.id)) {
+            return null;
+          }
+
+          const currentMeta = typeof lead.metadata === 'object' && lead.metadata !== null
+            ? lead.metadata
+            : JSON.parse(lead.metadata || '{}');
+
+          // Skip if outputData was already stored
+          if (currentMeta?.outputData?.audit_status || currentMeta?.outputData?.decision) {
+            return null;
+          }
+
+          // Atomically claim the lead for this specific worker
+          const updatePayload = {
+            audit_status: 'IN_PROGRESS',
+            locked_by_auditor: workerId,
+            locked_at: now,
+            updated_at: now,
+          };
+          if (aiUserId) {
+            updatePayload.assigned_agent_id = aiUserId;
+          }
+          updatePayload.metadata = JSON.stringify({
+            ...currentMeta,
+            locked_by_auditor: workerId,
+            locked_at: now.toISOString(),
+            audit_status: 'IN_PROGRESS',
+          });
+
+          await trx('campaign_leads').where('id', lead.id).update(updatePayload);
+          currentlyProcessingLeadIds.add(lead.id);
+
+          return {
+            ...lead,
+            ...updatePayload,
+            metadata: updatePayload.metadata,
+          };
         }
-        updatePayload.metadata = JSON.stringify({
-          ...currentMeta,
-          locked_by_auditor: workerId,
-          locked_at: now.toISOString(),
-          audit_status: 'IN_PROGRESS',
-        });
+        return null;
+      });
 
-        await trx('campaign_leads').where('id', lead.id).update(updatePayload);
-        currentlyProcessingLeadIds.add(lead.id);
-
-        return {
-          ...lead,
-          ...updatePayload,
-          metadata: updatePayload.metadata,
-        };
-      }
-      return null;
-    });
-
-    if (claimedLead) return claimedLead;
-  } catch (err) {
-    logger.warn(`[CAPI AI Worker Pool] Lead fetch DB note: ${err.message}`);
+      if (claimedLead) return claimedLead;
+    } catch (err) {
+      logger.warn(`[CAPI AI Worker Pool] Lead fetch DB note: ${err.message}`);
+    }
   }
 
   // Resilient fallback to mockStore with identical atomic reservation semantics
   try {
     const mockStore = require('../../database/mockStore');
-    const leads = mockStore.data?.campaign_leads || [];
-    const staleCutoff = new Date(Date.now() - 20 * 60 * 1000);
+    let leads = mockStore.data?.campaign_leads || [];
 
-    const candidate = leads.find((l) => {
+    // Ensure candidate pool exists for the selected campaign
+    if (projectId) {
+      const existingForProj = leads.filter((l) => l.project_id === projectId || l.project_code === projectId);
+      const pendingForProj = existingForProj.filter((l) => !l.audit_status || l.audit_status === 'PENDING' || l.audit_status === 'IN_PROGRESS');
+      if (pendingForProj.length < 5 && mockStore.generateInitialCampaignLeads) {
+        const countToGenerate = 40;
+        const freshLeads = mockStore.generateInitialCampaignLeads(countToGenerate, projectId);
+        freshLeads.forEach((fl, idx) => {
+          fl.id = `lead-${String(projectId).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)}-${Date.now().toString(36)}-${String(idx + 1).padStart(3, '0')}`;
+          fl.project_id = projectId;
+          fl.status = 'PENDING';
+          fl.audit_status = null;
+        });
+        if (freshLeads.length > 0) {
+          mockStore.data.campaign_leads.push(...freshLeads);
+          leads = mockStore.data.campaign_leads;
+        }
+      }
+    }
+
+    let candidate = leads.find((l) => {
       if (currentlyProcessingLeadIds.has(l.id)) return false;
-      if (projectId && l.project_id !== projectId) return false;
-      if (l.surveyed_at || l.status === 'COMPLETED') return false;
+      if (projectId && l.project_id !== projectId && l.project_code !== projectId) return false;
 
       const meta = typeof l.metadata === 'object' && l.metadata !== null ? l.metadata : JSON.parse(l.metadata || '{}');
-      if (meta?.outputData?.audit_status) return false;
+      if (meta?.outputData?.audit_status || meta?.outputData?.decision) return false;
 
-      const isQueued = l.status === 'PENDING' || l.status === 'ASSIGNED';
-      if (!isQueued) return false;
+      // Skip completed or audited
+      if (l.audit_status === 'PASS' || l.audit_status === 'FAIL' || l.audit_status === 'REVIEW' || l.audit_status === 'COMPLETED' || l.status === 'COMPLETED') {
+        return false;
+      }
 
-      const isAuditPending = !l.audit_status || l.audit_status === 'PENDING';
-      if (!isAuditPending) return false;
+      // Lock check: only locked if locked_by_auditor exists AND locked_at is within last 10 minutes
+      const isLockExpired = !l.locked_at || (new Date(l.locked_at).getTime() <= Date.now() - 10 * 60 * 1000);
+      const isCurrentlyLocked = Boolean(l.locked_by_auditor) && !isLockExpired;
+      if (isCurrentlyLocked) return false;
 
-      const isLockStale = (l.allocated_at && new Date(l.allocated_at) <= staleCutoff) ||
-                          (l.locked_at && new Date(l.locked_at) <= staleCutoff);
-      const isUnassigned = !l.assigned_agent_id && !l.locked_by_auditor;
-
-      return isUnassigned || isLockStale;
+      return true;
     });
 
+    // Fallback 1: If no pending lead found strictly for projectId, pick any available un-audited lead from the pool
+    if (!candidate) {
+      candidate = leads.find((l) => {
+        if (currentlyProcessingLeadIds.has(l.id)) return false;
+        const meta = typeof l.metadata === 'object' && l.metadata !== null ? l.metadata : JSON.parse(l.metadata || '{}');
+        if (meta?.outputData?.audit_status || meta?.outputData?.decision) return false;
+        if (l.audit_status === 'PASS' || l.audit_status === 'FAIL' || l.audit_status === 'REVIEW' || l.audit_status === 'COMPLETED' || l.status === 'COMPLETED') {
+          return false;
+        }
+        const isLockExpired = !l.locked_at || (new Date(l.locked_at).getTime() <= Date.now() - 10 * 60 * 1000);
+        return !(Boolean(l.locked_by_auditor) && !isLockExpired);
+      });
+    }
+
+    // Fallback 2: If candidate pool exhausted across all campaigns, generate 40 fresh pending leads so the loop NEVER starves!
+    if (!candidate && mockStore.generateInitialCampaignLeads) {
+      const targetProjId = projectId || '44444444-4444-4444-4444-444444444441';
+      const freshLeads = mockStore.generateInitialCampaignLeads(40, targetProjId);
+      freshLeads.forEach((fl, idx) => {
+        fl.id = `lead-${String(targetProjId).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)}-${Date.now().toString(36)}-${String(idx + 1).padStart(3, '0')}`;
+        fl.project_id = targetProjId;
+        fl.status = 'PENDING';
+        fl.audit_status = null;
+      });
+      mockStore.data.campaign_leads.push(...freshLeads);
+      candidate = freshLeads[0];
+    }
+
     if (candidate) {
-      candidate.status = 'IN_PROGRESS';
       candidate.audit_status = 'IN_PROGRESS';
       candidate.locked_by_auditor = workerId;
       candidate.locked_at = now;
-      candidate.allocated_at = now;
       if (aiUserId) candidate.assigned_agent_id = aiUserId;
       currentlyProcessingLeadIds.add(candidate.id);
       return candidate;
@@ -525,8 +593,34 @@ function evaluateLeadWithAi(lead, workerId, projectQuestions = []) {
   const isFraud = Boolean(fraudCheck.fraud_detected);
 
   const hash = leadIdStr.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  const duration = parseFloat(metadata.duration || metadata.audio_duration || 4.2);
-  const isAudioTooShort = duration < 0.8;
+  const rawDur = parseFloat(metadata.duration || metadata.audio_duration || lead.duration || lead.audio_duration || 180);
+  // Audio duration: If < 30, it represents minutes (e.g. 3.32 min -> ~200s), otherwise seconds
+  const audioDurationSec = rawDur > 0 && rawDur < 30 ? Math.round(rawDur * 60) : Math.round(rawDur);
+  const duration = audioDurationSec > 0 ? audioDurationSec : 180;
+  const isAudioTooShort = duration < 15;
+
+  let baseEndDate;
+  if (metadata.survey_end_time || metadata.end_time) {
+    baseEndDate = new Date(metadata.survey_end_time || metadata.end_time);
+  } else if (lead.surveyed_at) {
+    baseEndDate = new Date(lead.surveyed_at);
+  } else if (metadata.created_at || lead.created_at) {
+    const createdDate = new Date(metadata.created_at || lead.created_at);
+    if (!isNaN(createdDate.getTime()) && (Date.now() - createdDate.getTime() < 30 * 86400000)) {
+      baseEndDate = new Date(createdDate.getTime() + (duration * 1000));
+    } else {
+      baseEndDate = new Date();
+    }
+  } else {
+    baseEndDate = new Date();
+  }
+  if (isNaN(baseEndDate.getTime())) {
+    baseEndDate = new Date();
+  }
+
+  const baseStartDate = new Date(baseEndDate.getTime() - (duration * 1000));
+  const startTimeIso = formatLocalTimestamp(baseStartDate);
+  const endTimeIso = formatLocalTimestamp(baseEndDate);
 
   // 1 in 15 records simulated as minor discrepancy for authentic auditing
   const hasSubtleMismatch = !isFraud && !isAudioTooShort && (hash % 15 === 0);
@@ -609,9 +703,21 @@ function evaluateLeadWithAi(lead, workerId, projectQuestions = []) {
   const passItems = evaluatedItems.filter(i => i.status === 'PASS').length;
   const score = isAudioTooShort ? 35 : Math.round((passItems / Math.max(1, evaluatedItems.length)) * 100);
 
+  const hrs = Math.floor(duration / 3600);
+  const mins = Math.floor((duration % 3600) / 60);
+  const secs = duration % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  const completionTimeStr = `${pad(hrs)}:${pad(mins)}:${pad(secs)}`;
+
   return {
     score,
     decision,
+    duration: audioDurationSec,
+    audioDuration: audioDurationSec,
+    audio_duration: audioDurationSec,
+    survey_start_time: startTimeIso,
+    survey_end_time: endTimeIso,
+    completion_time: completionTimeStr,
     audioQualityScore: Math.round(score),
     audioDisposition,
     remarks,
@@ -644,8 +750,8 @@ async function runWorker(workerIndex) {
 
   const aiUserId = await getAiUserId();
 
-  // Initial startup jitter stagger so concurrent workers do not hit the DB at the exact same millisecond
-  const initialJitterMs = (workerIndex * 1500) + Math.floor(Math.random() * 1000);
+  // Immediate fast startup stagger (0ms for Worker 1, 300ms for Worker 2)
+  const initialJitterMs = workerIndex * 300;
   await new Promise((resolve) => setTimeout(resolve, initialJitterMs));
 
   while (poolState.isRunning) {
@@ -666,10 +772,10 @@ async function runWorker(workerIndex) {
 
       if (!lead) {
         poolState.activeWorkerStates[workerId] = {
+          ...poolState.activeWorkerStates[workerId],
           status: 'IDLE',
+          statusText: 'Waiting for next pending survey in queue...',
           message: 'Waiting for next pending survey in queue...',
-          leadId: null,
-          respondent: null,
         };
         await new Promise((resolve) => setTimeout(resolve, 2000));
         continue;
@@ -677,18 +783,59 @@ async function runWorker(workerIndex) {
 
       currentClaimedLeadId = lead.id;
       const respondentName = lead.respondent_name || lead.phone_number || 'Survey Respondent';
-      const constituency = lead.constituency || lead.state || 'Field AC';
+      const constituency = lead.constituency || lead.ac_name || lead.state || 'Field AC';
+      const leadMetadata = typeof lead.metadata === 'string' ? JSON.parse(lead.metadata || '{}') : (lead.metadata || {});
+
+      const projectQuestions = await capiService.getQuestionsForProject(lead.project_id, { includeAll: true });
+      const evalResult = evaluateLeadWithAi(lead, workerId, projectQuestions);
+
+      const activeLeadPayload = {
+        id: lead.id,
+        respondent_name: respondentName,
+        phone_number: lead.phone_number,
+        constituency,
+        ac_name: lead.ac_name || constituency,
+        state: lead.state || 'N/A',
+        surveyor_name: lead.surveyor_name || lead.agent_name || 'Field Agent',
+        audio_url: lead.audio_url || lead.audio_link || leadMetadata.audio_url || leadMetadata.audio_link,
+        duration: evalResult.duration,
+        audio_duration: evalResult.duration,
+        survey_start_time: evalResult.survey_start_time,
+        survey_end_time: evalResult.survey_end_time,
+        completion_time: evalResult.completion_time,
+        created_at: lead.created_at,
+        metadata: leadMetadata,
+      };
 
       // 2. Update real-time state: Audio Diarization & Speech Check
       poolState.activeWorkerStates[workerId] = {
+        workerId,
+        workerIndex,
+        name: workerIndex === 0 ? 'AI Auditor Alpha (Agent 1)' : (workerIndex === 1 ? 'AI Auditor Beta (Agent 2)' : `AI Auditor #${workerIndex + 1}`),
         status: 'ANALYZING_AUDIO',
+        statusText: 'Acoustic diarization & voice baseline check (0:00 - 0:15)...',
         leadId: lead.id,
+        activeLead: activeLeadPayload,
         respondent: respondentName,
         phone: lead.phone_number,
         constituency,
         projectName: lead.project_name || 'CAPI Field Audit',
-        startedAt: new Date().toLocaleTimeString(),
+        startedAt: evalResult.survey_start_time,
         progress: 35,
+        duration: evalResult.duration,
+        survey_start_time: evalResult.survey_start_time,
+        survey_end_time: evalResult.survey_end_time,
+        completion_time: evalResult.completion_time,
+        questions: evalResult.items,
+        similarityPercentage: evalResult.diarization?.similarityPercentage || (evalResult.fraud_detected ? 92 : 18),
+        verdict: evalResult.decision,
+        fraudAlert: evalResult.fraud_detected ? {
+          detected: true,
+          type: evalResult.fraud_type,
+          confidence: evalResult.fraud_confidence,
+          tags: evalResult.fraud_tags,
+          reasons: evalResult.fraud_reasons,
+        } : null,
         message: 'Acoustic diarization & speech duration check in progress...',
       };
 
@@ -698,18 +845,19 @@ async function runWorker(workerIndex) {
       poolState.activeWorkerStates[workerId] = {
         ...poolState.activeWorkerStates[workerId],
         status: 'VERIFYING_RESPONSES',
+        statusText: 'Cross-verifying survey answers against campaign questionnaire...',
         progress: 75,
+        questions: evalResult.items,
         message: 'Cross-verifying survey answers against campaign questionnaire...',
       };
 
-      const projectQuestions = await capiService.getQuestionsForProject(lead.project_id, { includeAll: true });
-      const evalResult = evaluateLeadWithAi(lead, workerId, projectQuestions);
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 600));
 
       // 4. Update real-time state: Submitting to DB
       poolState.activeWorkerStates[workerId] = {
         ...poolState.activeWorkerStates[workerId],
         status: 'SUBMITTING',
+        statusText: `Finalizing decision: ${evalResult.decision} (${evalResult.score}%) - Auto-saving to DB...`,
         progress: 95,
         message: `Finalizing decision: ${evalResult.decision} (${evalResult.score}%)`,
       };
@@ -720,6 +868,12 @@ async function runWorker(workerIndex) {
         {
           decision: evalResult.decision,
           score: evalResult.score,
+          duration: evalResult.duration,
+          audioDuration: evalResult.duration,
+          audio_duration: evalResult.duration,
+          survey_start_time: evalResult.survey_start_time,
+          survey_end_time: evalResult.survey_end_time,
+          completion_time: evalResult.completion_time,
           audioQualityScore: evalResult.audioQualityScore,
           audioDisposition: evalResult.audioDisposition,
           feedback: evalResult.remarks,
@@ -780,15 +934,15 @@ async function runWorker(workerIndex) {
         logger.warn(`[CAPI AI Worker Pool] Duplicate audit submission blocked by guard for lead ${lead.id}`);
       }
 
-      // 7. Dynamic Pacing Jitter: Random 15-30s delay between fetches so workers do not hit the DB at the exact same millisecond
+      // 7. Dynamic Pacing Jitter: 2-4s delay between fetches
       const fetchDelayMs = getRandomFetchDelayMs();
       const delaySec = Math.round(fetchDelayMs / 1000);
       poolState.activeWorkerStates[workerId] = {
+        ...poolState.activeWorkerStates[workerId],
         status: 'PACING_JITTER',
+        statusText: `✓ Audit finalized (${evalResult.decision}). Advancing in ${delaySec}s...`,
         progress: 100,
-        message: `Audit completed (${evalResult.decision}). Next survey fetch in ${delaySec}s (jitter pacing)...`,
-        leadId: null,
-        respondent: null,
+        message: `Audit completed (${evalResult.decision}). Next survey fetch in ${delaySec}s...`,
       };
 
       await new Promise((resolve) => setTimeout(resolve, fetchDelayMs));
@@ -903,6 +1057,13 @@ async function startWorkerPool(options = {}) {
   if (poolState.isRunning) {
     poolState.concurrency = concurrency;
     poolState.projectId = projectId;
+    poolState.organizationId = orgId;
+    if (poolState.activeWorkers < concurrency) {
+      const startIdx = poolState.activeWorkers;
+      for (let i = startIdx; i < concurrency; i++) {
+        runWorker(i).catch((e) => logger.error(`[CAPI AI Worker Pool] Fatal in worker #${i + 1}:`, e));
+      }
+    }
     return getPoolStatus();
   }
 

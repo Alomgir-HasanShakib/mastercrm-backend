@@ -16,6 +16,9 @@ const questionnaireService = require('../questionnaire/questionnaire.service');
  * Checks whether PostgreSQL is online and has table.
  */
 const withDbFallback = async (dbOperation, mockFallback) => {
+  if (!db.isDbHealthy || !db.isDbHealthy()) {
+    return mockFallback();
+  }
   try {
     return await dbOperation();
   } catch (err) {
@@ -31,6 +34,9 @@ const withDbFallback = async (dbOperation, mockFallback) => {
  * Determines whether a project exists in live PostgreSQL DB.
  */
 const isDbProject = async (projectId) => {
+  if (!db.isDbHealthy || !db.isDbHealthy()) {
+    return false;
+  }
   try {
     const p = await db('projects').where('id', projectId).first();
     return Boolean(p);
@@ -1136,6 +1142,15 @@ class ProjectsService {
 
         const auditStatusVal = (surveyData.outputData?.audit_status || surveyData.outputData?.decision || 'COMPLETED').toUpperCase();
 
+        const leadMeta = typeof lead.metadata === 'object' && lead.metadata !== null
+          ? lead.metadata
+          : JSON.parse(lead.metadata || '{}');
+
+        const durationVal = surveyData.outputData?.duration ?? surveyData.outputData?.audio_duration ?? leadMeta.duration ?? leadMeta.audio_duration ?? lead.duration ?? 180;
+        const surveyStartTime = surveyData.outputData?.survey_start_time ?? surveyData.outputData?.surveyStartTime ?? leadMeta.survey_start_time ?? new Date().toISOString();
+        const surveyEndTime = surveyData.outputData?.survey_end_time ?? surveyData.outputData?.surveyEndTime ?? new Date().toISOString();
+        const completionTime = surveyData.outputData?.completion_time ?? surveyData.outputData?.completionTime ?? new Date().toISOString();
+
         const [updated] = await db('campaign_leads')
           .where('id', leadId)
           .whereNot('status', 'COMPLETED')
@@ -1148,10 +1163,20 @@ class ProjectsService {
             updated_at: new Date(),
             assigned_agent_id: assignedAgentId,
             metadata: JSON.stringify({
-              ...(typeof lead.metadata === 'object' && lead.metadata !== null ? lead.metadata : JSON.parse(lead.metadata || '{}')),
+              ...leadMeta,
               surveyResponses: surveyData.responses || {},
+              duration: durationVal,
+              audio_duration: durationVal,
+              survey_start_time: surveyStartTime,
+              survey_end_time: surveyEndTime,
+              completion_time: completionTime,
               outputData: {
                 ...(surveyData.outputData || {}),
+                duration: durationVal,
+                audio_duration: durationVal,
+                survey_start_time: surveyStartTime,
+                survey_end_time: surveyEndTime,
+                completion_time: completionTime,
                 pushed: 0,
               },
               pushed: 0,
@@ -1170,7 +1195,6 @@ class ProjectsService {
 
         // 1. Ingest/Update submissions table
         const project = await db('projects').where('id', lead.project_id).first();
-        const leadMeta = typeof lead.metadata === 'string' ? JSON.parse(lead.metadata || '{}') : (lead.metadata || {});
         const submissionId = leadMeta.submission_id || `SUB-SURVEY-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
 
         let sourceAgentId = assignedAgentId;
@@ -1224,6 +1248,13 @@ class ProjectsService {
           if (tableCols.includes('full_name')) outRow.full_name = lead.respondent_name;
           if (tableCols.includes('ac_name') && lead.constituency) outRow.ac_name = lead.constituency;
           if (tableCols.includes('audit_status')) outRow.audit_status = surveyData.disposition || 'PASS';
+          if (tableCols.includes('duration')) outRow.duration = durationVal;
+          if (tableCols.includes('audio_duration')) outRow.audio_duration = durationVal;
+          if (tableCols.includes('survey_start_time')) outRow.survey_start_time = surveyStartTime;
+          if (tableCols.includes('survey_end_time')) outRow.survey_end_time = surveyEndTime;
+          if (tableCols.includes('completion_time')) outRow.completion_time = completionTime;
+          if (tableCols.includes('start_time')) outRow.start_time = surveyStartTime;
+          if (tableCols.includes('end_time')) outRow.end_time = surveyEndTime;
           if (tableCols.includes('agent_id')) outRow.agent_id = tenantContext.email || 'agent';
           if (tableCols.includes('assignment_time')) outRow.assignment_time = new Date();
           if (tableCols.includes('pushed')) {
@@ -1249,6 +1280,11 @@ class ProjectsService {
             {
               decision: surveyData.outputData?.audit_status || surveyData.disposition,
               score: surveyData.outputData?.score,
+              duration: surveyData.outputData?.duration || lead.duration,
+              audioDuration: surveyData.outputData?.audio_duration,
+              survey_start_time: surveyData.outputData?.survey_start_time,
+              survey_end_time: surveyData.outputData?.survey_end_time,
+              completion_time: surveyData.outputData?.completion_time,
               audioDisposition: surveyData.outputData?.audio_disposition,
               feedback: surveyData.outputData?.remarks,
               items: surveyData.responses,
