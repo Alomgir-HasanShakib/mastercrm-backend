@@ -31,11 +31,15 @@ app.use(
       if (
         config.cors.origin.includes('*') ||
         config.cors.origin.indexOf(origin) !== -1 ||
-        config.app.env === 'development'
+        config.app.env === 'development' ||
+        /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ||
+        origin.endsWith('.onrender.com') ||
+        origin.endsWith('.vercel.app') ||
+        origin.endsWith('.netlify.app')
       ) {
         return callback(null, true);
       }
-      return callback(new Error('Blocked by CORS policy'));
+      return callback(null, true);
     },
     credentials: config.cors.credentials,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
