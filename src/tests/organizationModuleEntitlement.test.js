@@ -132,7 +132,7 @@ describe('Organization Module Entitlement & Access Control Suite', () => {
       await request(app)
         .put('/api/v1/organizations/11111111-1111-1111-1111-111111111111/modules')
         .set('Authorization', `Bearer ${masterAdminToken}`)
-        .send({ enabled_modules: ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'] });
+        .send({ enabled_modules: ['CAPI', 'TVC'] });
 
       const res = await request(app)
         .get('/api/v1/tvc/metrics')
@@ -331,7 +331,7 @@ describe('Organization Module Entitlement & Access Control Suite', () => {
       await request(app)
         .put('/api/v1/organizations/11111111-1111-1111-1111-111111111111/modules')
         .set('Authorization', `Bearer ${masterAdminToken}`)
-        .send({ enabled_modules: ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'] });
+        .send({ enabled_modules: ['CAPI'] });
     } catch (_) {}
   });
 });

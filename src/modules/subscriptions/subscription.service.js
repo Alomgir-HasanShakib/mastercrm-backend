@@ -569,7 +569,7 @@ const createOrRenewSubscription = async (data = {}, tenantContext = {}) => {
         .returning('*');
 
       // Resolve updated enabled_modules list
-      let currentModules = org.enabled_modules || ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'];
+      let currentModules = org.enabled_modules ?? org.settings?.enabled_modules ?? [];
       if (typeof currentModules === 'string') {
         try {
           currentModules = JSON.parse(currentModules);
@@ -578,7 +578,7 @@ const createOrRenewSubscription = async (data = {}, tenantContext = {}) => {
         }
       }
       if (!Array.isArray(currentModules)) {
-        currentModules = ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'];
+        currentModules = [];
       }
 
       let updatedModules = [...currentModules];
@@ -760,7 +760,7 @@ const createOrRenewSubscription = async (data = {}, tenantContext = {}) => {
 
       const orgItem = (mockStore.data?.organizations || []).find((o) => o.id === organizationId);
       if (orgItem) {
-        let currentModules = orgItem.enabled_modules || ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'];
+        let currentModules = orgItem.enabled_modules ?? orgItem.settings?.enabled_modules ?? [];
         if (typeof currentModules === 'string') {
           try {
             currentModules = JSON.parse(currentModules);
@@ -769,7 +769,7 @@ const createOrRenewSubscription = async (data = {}, tenantContext = {}) => {
           }
         }
         if (!Array.isArray(currentModules)) {
-          currentModules = ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'];
+          currentModules = [];
         }
 
         let updatedModules = [...currentModules];

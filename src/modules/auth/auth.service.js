@@ -155,7 +155,8 @@ const DEMO_ACCOUNTS = {
     organization_id: '11111111-1111-1111-1111-111111111111',
     vendor_id: null,
     status: 'ACTIVE',
-    enable_ai_audit: true,
+    enable_ai_audit: false,
+    enabled_modules: ['CAPI'],
     permissions: ['*'],
   },
   'sourov@gmail.com': {
@@ -228,6 +229,8 @@ const DEMO_ACCOUNTS = {
     organization_id: '11111111-1111-1111-1111-111111111111',
     vendor_id: null,
     status: 'ACTIVE',
+    enable_ai_audit: false,
+    enabled_modules: ['CAPI'],
     permissions: ['*'],
   },
   'client@crm.local': {
@@ -240,6 +243,8 @@ const DEMO_ACCOUNTS = {
     organization_id: '11111111-1111-1111-1111-111111111111',
     vendor_id: null,
     status: 'ACTIVE',
+    enable_ai_audit: false,
+    enabled_modules: ['CAPI'],
     permissions: ['*'],
   },
   'tvc@mastercrm.com': {
@@ -555,10 +560,11 @@ const refreshTokens = async (refreshToken) => {
 
   // Generate new pair
   const tokenPair = await generateTokenPair(user);
+  const enrichedUser = await enrichUserWithOrgDetails(sanitizeUser(user));
 
   return {
     ...tokenPair,
-    user: sanitizeUser(user),
+    user: enrichedUser,
   };
 };
 
@@ -715,10 +721,12 @@ const getUserProfile = async (userId) => {
   if (!user) {
     const matchedDemo = Object.values(DEMO_ACCOUNTS).find((u) => u.id === userId);
     if (matchedDemo) {
+      const enrichedDemo = await enrichUserWithOrgDetails({ ...matchedDemo });
+      const campaignAssignments = await getUserCampaignAssignments(userId, matchedDemo);
       return {
-        ...matchedDemo,
+        ...enrichedDemo,
         assignments: [],
-        assignedCampaigns: [],
+        assignedCampaigns: campaignAssignments,
         leaseStats: null,
       };
     }
