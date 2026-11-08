@@ -1303,7 +1303,7 @@ const capiService = {
 
       // Trigger automatic survey completion and client database sync
       await projectsService.surveyCampaignLead(lead.id, {
-        responses: decisionData.items || [],
+        responses: decisionData.responses || decisionData.items || [],
         outputData: {
           audit_status: decisionData.decision || (decisionData.audioDisposition === 'Audio Downloadable & Playable' ? 'PASS' : 'FAIL'),
           audio_disposition: decisionData.audioDisposition || '',
@@ -1321,6 +1321,9 @@ const capiService = {
           fraud_confidence: decisionData.fraud_confidence || null,
           fraud_tags: decisionData.fraud_tags || [],
           fraud_reasons: decisionData.fraud_reasons || null,
+          evidence_ledger: decisionData.evidence_ledger || decisionData.evidenceLedger || null,
+          audio_transparency: decisionData.audio_transparency || decisionData.audioTransparency || null,
+          responses: decisionData.responses || null,
         },
       }, {
         userId: user.id,
@@ -1340,6 +1343,7 @@ const capiService = {
             metadata: {
               ...leadMeta,
               surveyResponses: decisionData.items || [],
+              responses: decisionData.responses || leadMeta.responses || {},
               duration: durationVal,
               survey_start_time: surveyStartTime,
               survey_end_time: surveyEndTime,
@@ -1352,6 +1356,7 @@ const capiService = {
                 survey_end_time: surveyEndTime,
                 completion_time: completionTime,
                 remarks: decisionData.feedback,
+                responses: decisionData.responses || null,
               },
             },
           },
@@ -1365,6 +1370,7 @@ const capiService = {
             audioDisposition: decisionData.audioDisposition,
             feedback: decisionData.feedback,
             items: decisionData.items || [],
+            responses: decisionData.responses || null,
           },
           user
         );

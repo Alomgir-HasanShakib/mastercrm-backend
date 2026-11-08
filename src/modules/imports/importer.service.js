@@ -56,13 +56,20 @@ class ImporterService {
    */
   parseLegacyMhCapi(workbook, options = {}) {
     const onlyAudited = options.onlyAudited === true;
-    const cmSheet = workbook.Sheets['Column Mapping'] || workbook.Sheets[workbook.SheetNames.find((s) => s.toLowerCase() === 'column mapping')];
+    const cmSheetName = workbook.SheetNames.find((s) => {
+      const l = s.toLowerCase().trim();
+      return (l === 'column mapping' || l.includes('mapping')) && !l.includes('old');
+    });
+    const cmSheet = cmSheetName ? workbook.Sheets[cmSheetName] : null;
     if (!cmSheet) {
-      throw new ValidationError("Workbook must contain 'Column Mapping' sheet for legacy MH-CAPI profile.");
+      throw new ValidationError("Workbook must contain active 'Column Mapping' sheet for legacy MH-CAPI profile.");
     }
 
     const cmData = XLSX.utils.sheet_to_json(cmSheet, { header: 1, defval: '' });
-    const masterSheetName = workbook.SheetNames.find((s) => s.toLowerCase().includes('maste') || s.toLowerCase().includes('master'));
+    const masterSheetName = workbook.SheetNames.find((s) => {
+      const l = s.toLowerCase().trim();
+      return (l.includes('maste') || l.includes('master')) && !l.includes('old');
+    });
     const masterSheet = masterSheetName ? workbook.Sheets[masterSheetName] : null;
     const masterRows = masterSheet ? XLSX.utils.sheet_to_json(masterSheet, { defval: '' }) : [];
 
@@ -113,29 +120,43 @@ class ImporterService {
       }
     });
 
-    // 2. Parse Column Mapping rows 2 to 101 (exactly 100 entries)
+    // 2. Parse Column Mapping rows with normalized headers
+    const headerRow = cmData[0] || [];
+    const headerIndexMap = {};
+    headerRow.forEach((h, idx) => {
+      const norm = String(h || '').trim().replace(/\s+/g, ' ').toLowerCase();
+      if (norm) headerIndexMap[norm] = idx;
+    });
+
+    const getCol = (row, normKey, fallbackIdx) => {
+      const idx = headerIndexMap[normKey] !== undefined ? headerIndexMap[normKey] : fallbackIdx;
+      return idx !== undefined ? String(row[idx] ?? '').trim() : '';
+    };
+
     let auditableCount = 0;
     let headingCount = 0;
 
-    for (let r = 1; r <= 100; r++) {
+    for (let r = 1; r < cmData.length; r++) {
       const row = cmData[r];
-      if (!row || (!row[0] && !row[1])) continue;
+      if (!row || row.every((c) => c === '')) continue;
 
-      const qText = String(row[0] || '').trim();
-      const tag = String(row[1] || '').trim();
-      const rawVisible = row[2];
-      const rawAudited = String(row[3] || '').trim();
-      const diuInput = String(row[4] || '').trim();
-      const qInputDiu = String(row[5] || '').trim();
-      const qValCol = String(row[6] || '').trim();
-      const ansValCol = String(row[7] || '').trim();
-      const ansValCol1 = String(row[8] || '').trim();
-      const ansValCol2 = String(row[9] || '').trim();
-      const actualCol = String(row[10] || '').trim();
-      const qValOpts = String(row[11] || '').trim();
-      const ansValOpts = String(row[12] || '').trim();
-      const condition = String(row[15] || '').trim();
-      const superAuditCondition = String(row[16] || '').trim();
+      const qText = getCol(row, 'question text', 0);
+      const tag = getCol(row, 'tag', 1);
+      const rawVisible = headerIndexMap['question visible'] !== undefined ? row[headerIndexMap['question visible']] : row[2];
+      const rawAudited = getCol(row, 'to be audited', 3);
+      const diuInput = getCol(row, 'input column from diu', 4);
+      const qInputDiu = getCol(row, 'question input from diu', 5);
+      const qValCol = getCol(row, 'question validation column', 6);
+      const ansValCol = getCol(row, 'answer validation column', 7);
+      const ansValCol1 = getCol(row, 'answer validation column 1', 8);
+      const ansValCol2 = getCol(row, 'answer validation column 2', 9);
+      const actualCol = getCol(row, 'actual column', 10);
+      const qValOpts = getCol(row, 'question validation column options', 11);
+      const ansValOpts = getCol(row, 'answer validation column options', 12);
+      const ansValOpts1 = getCol(row, 'answer validation options 1', 13);
+      const ansValOpts2 = getCol(row, 'answer validation options 2', 14);
+      const condition = getCol(row, 'condition', 15);
+      const superAuditCondition = getCol(row, 'super audit condition', 16);
 
       const isAudited = rawAudited.toLowerCase() === 'yes';
       if (isAudited) auditableCount++;
@@ -191,6 +212,15 @@ class ImporterService {
       const validationOptions = ansValOpts
         ? ansValOpts.split('\n').map((x) => x.trim()).filter(Boolean)
         : [];
+      const validationOptions1 = ansValOpts1
+        ? ansValOpts1.split('\n').map((x) => x.trim()).filter(Boolean)
+        : [];
+      const validationOptions2 = ansValOpts2
+        ? ansValOpts2.split('\n').map((x) => x.trim()).filter(Boolean)
+        : [];
+      const qValidationOptions = qValOpts
+        ? qValOpts.split('\n').map((x) => x.trim()).filter(Boolean)
+        : [];
 
       // Look up master options
       const masterOpts = masterOptionsMap.get(tag) || [];
@@ -204,6 +234,33 @@ class ImporterService {
       } else if (masterOpts.length === 0 && !isAudited) {
         controlType = 'text';
       }
+
+      const validations = [
+        qValCol || qValidationOptions.length > 0 ? {
+          type: 'question',
+          responseKey: qValCol || `${tag}_question_validation`,
+          label: 'Question Validation',
+          options: qValidationOptions,
+        } : null,
+        ansValCol || validationOptions.length > 0 ? {
+          type: 'answer',
+          responseKey: ansValCol || `${tag}_validation`,
+          label: 'Answer Validation',
+          options: validationOptions,
+        } : null,
+        ansValCol1 || validationOptions1.length > 0 ? {
+          type: 'answer1',
+          responseKey: ansValCol1 || `${tag}_validation_1`,
+          label: 'Answer Validation 1',
+          options: validationOptions1,
+        } : null,
+        ansValCol2 || validationOptions2.length > 0 ? {
+          type: 'answer2',
+          responseKey: ansValCol2 || `${tag}_validation_2`,
+          label: 'Answer Validation 2',
+          options: validationOptions2,
+        } : null,
+      ].filter(Boolean);
 
       const qItem = {
         id: `Q_${tag}_${r}`,
@@ -229,21 +286,30 @@ class ImporterService {
           inputColumnDiu: diuInput,
           questionInputFromDiu: qInputDiu,
           questionValidationColumn: qValCol,
-          questionValidationOptions: qValOpts ? qValOpts.split('\n').map((x) => x.trim()).filter(Boolean) : [],
+          questionValidationOptions: qValidationOptions,
           answerValidationColumn: ansValCol,
           answerValidationOptions: validationOptions,
           validationColumn: ansValCol,
           validationOptions,
           extraValidation1: ansValCol1,
           answerValidationColumn1: ansValCol1,
-          answerValidationOptions1: String(row[13] || '').split('\n').map((x) => x.trim()).filter(Boolean),
+          answerValidationOptions1: validationOptions1,
           extraValidation2: ansValCol2,
           answerValidationColumn2: ansValCol2,
-          answerValidationOptions2: String(row[14] || '').split('\n').map((x) => x.trim()).filter(Boolean),
+          answerValidationOptions2: validationOptions2,
           actualColumn: actualCol,
           condition,
           superAuditCondition,
+          validations,
         },
+        validations,
+        answerValidationColumn1: ansValCol1,
+        answerValidationOptions1: validationOptions1,
+        answerValidationColumn2: ansValCol2,
+        answerValidationOptions2: validationOptions2,
+        actualColumn: actualCol,
+        condition,
+        superAuditCondition,
         conditions: [],
         sourceRow: r + 1,
         sourceSheet: 'Column Mapping',

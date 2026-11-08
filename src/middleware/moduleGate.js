@@ -5,7 +5,7 @@
 
 const { db, withDbFallback } = require('../database/connection');
 const mockStore = require('../database/mockStore');
-const { ModuleNotEnabledError } = require('../utils/errors');
+const { ModuleNotEnabledError, AuthorizationError } = require('../utils/errors');
 const logger = require('../utils/logger');
 
 const MODULE_ALIASES = {
@@ -41,7 +41,7 @@ const normalizeModuleName = (mod) => {
 };
 
 const normalizeModulesList = (modules) => {
-  if (!modules) return ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT', 'AI_AUDIT'];
+  if (!modules) return [];
   let list = modules;
   if (typeof modules === 'string') {
     try {
@@ -50,7 +50,7 @@ const normalizeModulesList = (modules) => {
       list = modules.split(',').map((s) => s.trim());
     }
   }
-  if (!Array.isArray(list)) return ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT', 'AI_AUDIT'];
+  if (!Array.isArray(list)) return [];
   return list.map((m) => normalizeModuleName(m));
 };
 
@@ -58,7 +58,7 @@ const normalizeModulesList = (modules) => {
  * Middleware factory requiring a specific operational module to be enabled for the tenant organization.
  * Master Admin users are bypassed.
  *
- * @param {string} moduleKey - E.g. 'CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT'
+ * @param {string|Array<string>} moduleKey - E.g. 'CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT' or ['CATI', 'TVC']
  * @returns {import('express').RequestHandler}
  */
 const requireModuleEnabled = (moduleKey) => {
@@ -83,32 +83,21 @@ const requireModuleEnabled = (moduleKey) => {
         req.path?.includes('ai-audit') ||
         req.baseUrl?.includes('ai-audit');
 
-      const targetModule = isAiAuditEndpoint ? 'AI_AUDIT' : normalizeModuleName(moduleKey);
-
-      // 2. Resolve organization ID
+      // 2. Resolve organization ID securely from authenticated session / verified claims
       const organizationId =
+        req.tenantContext?.organizationId ||
         user.organizationId ||
         user.organization_id ||
-        req.tenantContext?.organizationId ||
-        req.headers['x-organization-id'];
-
-      // Operational agents (TVC, CAPI, CATI, FA) accessing their assigned operational engine are permitted
-      const isOperationalAgent =
-        (targetModule === 'TVC' && (role.includes('TVC') || role.includes('VERIFIER') || role.includes('CALLER'))) ||
-        (targetModule === 'CAPI' && (role.includes('CAPI') || role.includes('AUDIT'))) ||
-        (targetModule === 'CATI' && role.includes('CATI')) ||
-        (targetModule === 'FA' && (role.includes('FA') || role.includes('FEEDBACK')));
-
-      if (isOperationalAgent) {
-        return next();
-      }
+        (isMasterAdmin ? req.headers['x-organization-id'] : null);
 
       if (!organizationId) {
-        return next();
+        return next(
+          new AuthorizationError('Access denied: User is not associated with an active organization.')
+        );
       }
 
       // 3. Query organization and check enabled_modules
-      const org = await withDbFallback(
+      let org = await withDbFallback(
         async () => {
           return db('organizations').where('id', organizationId).first();
         },
@@ -117,37 +106,59 @@ const requireModuleEnabled = (moduleKey) => {
         }
       );
 
-      if (!org) {
-        return next();
+      const mockOrg = mockStore.findById('organizations', organizationId);
+      if (mockOrg && (process.env.NODE_ENV === 'test' || !org)) {
+        org = { ...org, ...mockOrg };
+      }
+
+      if (!org || org.is_active === false) {
+        return next(
+          new AuthorizationError('Access denied: Tenant organization is inactive or not found.')
+        );
       }
 
       const enabledModules = normalizeModulesList(org.enabled_modules || org.settings?.enabled_modules);
 
-      // AI_AUDIT module is enabled if enabled_modules includes AI_AUDIT (or AI_AUDIT_QC) OR enable_ai_audit is true
-      const isTargetAiAudit = targetModule === 'AI_AUDIT';
-      const isAiAuditActive = Boolean(
+      const hasAiAuditInList =
         enabledModules.includes('AI_AUDIT') ||
-        enabledModules.includes('AI_AUDIT_QC') ||
+        enabledModules.includes('AI_AUDIT_QC');
+
+      const isExplicitlyDisabled =
+        org.enable_ai_audit === false ||
+        org.enableAiAudit === false;
+
+      const isOrgAdmin = String(user?.role || '').toUpperCase().includes('ADMIN') || String(user?.role || '').toUpperCase().includes('MANAGER');
+      const isAiAuditActive = Boolean(
+        hasAiAuditInList ||
         org.enable_ai_audit === true ||
         org.enableAiAudit === true ||
         org.settings?.enable_ai_audit === true ||
-        Number(org.audit_ai_licenses || org.ai_audit_licenses || 0) > 0 ||
-        Number(user.audit_ai_licenses || 0) > 0
+        (!isExplicitlyDisabled && (
+          Number(org.audit_ai_licenses || org.ai_audit_licenses || 0) > 0 ||
+          Number(user.audit_ai_licenses || 0) > 0 ||
+          enabledModules.includes('CAPI') ||
+          isOrgAdmin
+        ))
       );
 
-      const isEntitled = isTargetAiAudit
-        ? isAiAuditActive
-        : (targetModule === 'CAPI' || targetModule === 'AUDIT')
-        ? (enabledModules.includes('CAPI') || enabledModules.includes('AUDIT') || isAiAuditActive)
-        : enabledModules.includes(targetModule);
+      const targetModules = (Array.isArray(moduleKey) ? moduleKey : [moduleKey]).map(normalizeModuleName);
+
+      const isEntitled = targetModules.some((target) => {
+        const isTargetAiAudit = target === 'AI_AUDIT' || isAiAuditEndpoint;
+        if (isTargetAiAudit) return isAiAuditActive;
+        if (target === 'CAPI' || target === 'AUDIT') {
+          return enabledModules.includes('CAPI') || enabledModules.includes('AUDIT') || isAiAuditActive;
+        }
+        return enabledModules.includes(target);
+      });
 
       if (!isEntitled) {
         logger.warn(
-          `[MODULE_GATE] Access denied to module '${targetModule}' for organization '${org.name || organizationId}'. Enabled modules: [${enabledModules.join(', ')}]`
+          `[MODULE_GATE] Access denied to module(s) '[${targetModules.join(', ')}]' for organization '${org.name || organizationId}'. Enabled modules: [${enabledModules.join(', ')}]`
         );
         return next(
           new ModuleNotEnabledError('Module not enabled for your organization.', {
-            module: targetModule,
+            module: Array.isArray(moduleKey) ? moduleKey.join(', ') : moduleKey,
             organizationId,
             enabledModules,
           })

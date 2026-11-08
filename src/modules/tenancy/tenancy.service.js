@@ -683,8 +683,8 @@ const listProjects = async (filters = {}, pagination = {}, tenantContext = {}) =
         if (tenantContext.isMasterAdmin) {
           delete scopedFilters.organizationId;
         } else {
-          const fallbackOrg = await db('organizations').where('is_active', true).first() || await db('organizations').first();
-          if (fallbackOrg) scopedFilters.organizationId = fallbackOrg.id;
+          // Strictly prevent cross-tenant data leakage if org is not found
+          scopedFilters.organizationId = '00000000-0000-0000-0000-000000000000';
         }
       }
     } catch (_) {}

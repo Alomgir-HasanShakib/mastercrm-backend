@@ -1669,13 +1669,15 @@ const questionnaireService = {
       }
     } catch (_) {}
 
+    let uploadSummary = null;
+
     if (!isJson) {
       workbook = xlsx.read(buffer, { type: 'buffer' });
 
-      // 1. Detect sheets in workbook
+      // 1. Detect active Column Mapping sheet, strictly excluding any old mapping sheets
       const mappingSheetName = workbook.SheetNames.find((s) => {
         const lower = s.toLowerCase().trim();
-        return lower.includes('mapping') || lower.includes('column map') || lower === 'map';
+        return (lower === 'column mapping' || lower.includes('mapping') || lower.includes('column map') || lower === 'map') && !lower.includes('old');
       });
 
       masterSheetName = workbook.SheetNames.find((s) => {
@@ -1689,21 +1691,24 @@ const questionnaireService = {
       });
 
       if (mappingSheetName) {
-        mappingRows = xlsx.utils.sheet_to_json(workbook.Sheets[mappingSheetName], { defval: '' });
-        isColumnMapping = mappingRows.length > 0;
-      } else {
-        const firstSheetRows = xlsx.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: '' });
-        const sample = firstSheetRows[0] || {};
-        if (
-          'Input Column from DIU' in sample ||
-          'Question Validation Column' in sample ||
-          'Answer  Validation Column' in sample ||
-          'Answer Validation Column' in sample ||
-          'To Be Audited' in sample ||
-          'To be audited' in sample
-        ) {
+        const rawGrid = xlsx.utils.sheet_to_json(workbook.Sheets[mappingSheetName], { header: 1, defval: '' });
+        if (rawGrid && rawGrid.length >= 2) {
           isColumnMapping = true;
-          mappingRows = firstSheetRows;
+          mappingRows = rawGrid;
+        }
+      } else {
+        const firstSheetRows = xlsx.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: '' });
+        if (firstSheetRows && firstSheetRows.length >= 2) {
+          const sample = firstSheetRows[0].map((h) => String(h || '').trim().replace(/\s+/g, ' ').toLowerCase());
+          if (
+            sample.includes('input column from diu') ||
+            sample.includes('question validation column') ||
+            sample.includes('answer validation column') ||
+            sample.includes('to be audited')
+          ) {
+            isColumnMapping = true;
+            mappingRows = firstSheetRows;
+          }
         }
       }
     }
@@ -1713,6 +1718,44 @@ const questionnaireService = {
     const usedTags = new Set();
 
     if (isColumnMapping) {
+      // Header Normalization for Column Mapping
+      const normalizeHeader = (h) =>
+        String(h || '')
+          .trim()
+          .replace(/\s+/g, ' ')
+          .toLowerCase();
+
+      let headerIndexMap = {};
+      let dataRows = [];
+
+      if (Array.isArray(mappingRows) && Array.isArray(mappingRows[0])) {
+        // Grid format: row 0 is header
+        const rawHeaders = mappingRows[0];
+        rawHeaders.forEach((h, idx) => {
+          const norm = normalizeHeader(h);
+          if (norm) headerIndexMap[norm] = idx;
+        });
+        dataRows = mappingRows.slice(1);
+      } else {
+        // Array of objects
+        const firstRow = mappingRows[0] || {};
+        const keys = Object.keys(firstRow);
+        keys.forEach((k) => {
+          const norm = normalizeHeader(k);
+          if (norm) headerIndexMap[norm] = k;
+        });
+        dataRows = mappingRows;
+      }
+
+      const getCol = (row, normKey) => {
+        const keyOrIdx = headerIndexMap[normKey];
+        if (keyOrIdx === undefined) return '';
+        if (Array.isArray(row)) {
+          return String(row[keyOrIdx] ?? '').trim();
+        }
+        return String(row[keyOrIdx] ?? '').trim();
+      };
+
       // Index options and metadata from master survey sheet if present
       const masterOptionsByTag = new Map();
       const masterMetaByTag = new Map();
@@ -1787,9 +1830,29 @@ const questionnaireService = {
       ]);
 
       let qIndex = 0;
-      for (const row of mappingRows) {
-        const rawTag = String(row['tag'] || row['Tag'] || '').trim();
-        const rawQText = String(row['Question Text'] || row['Question Text '] || '').trim();
+      let totalAudited = 0;
+      let totalExcluded = 0;
+      let withQVal = 0;
+      let withAVal = 0;
+      let withAVal1 = 0;
+      let withAVal2 = 0;
+      let withActual = 0;
+      let withConditions = 0;
+      const parseWarnings = [];
+
+      for (let rIdx = 0; rIdx < dataRows.length; rIdx++) {
+        const row = dataRows[rIdx];
+        if (!row || (Array.isArray(row) && row.every((c) => c === ''))) continue;
+        const excelRow = rIdx + 2;
+
+        const rawTag = getCol(row, 'tag');
+        const rawQText = getCol(row, 'question text');
+        const rawVisible = getCol(row, 'question visible');
+        const rawAudit = getCol(row, 'to be audited');
+
+        const normAudit = rawAudit.toLowerCase();
+        const isAudited = normAudit === 'yes';
+
         if (!rawTag && !rawQText) continue;
 
         qIndex++;
@@ -1800,6 +1863,85 @@ const questionnaireService = {
           tag = `${tag}_${c}`;
         }
         usedTags.add(tag);
+
+        const isVisible =
+          rawVisible === '1' ||
+          rawVisible === 1 ||
+          rawVisible.toLowerCase() === 'true' ||
+          rawVisible.toLowerCase() === 'yes';
+
+        const diuInput = getCol(row, 'input column from diu');
+        const qInputDiu = getCol(row, 'question input from diu');
+        const qValCol = getCol(row, 'question validation column');
+        const ansValCol = getCol(row, 'answer validation column');
+        const ansValCol1 = getCol(row, 'answer validation column 1');
+        const ansValCol2 = getCol(row, 'answer validation column 2');
+        const actualCol = getCol(row, 'actual column');
+
+        const rawQValOpts = getCol(row, 'question validation column options');
+        const rawAnsValOpts = getCol(row, 'answer validation column options');
+        const rawAnsValOpts1 = getCol(row, 'answer validation options 1');
+        const rawAnsValOpts2 = getCol(row, 'answer validation options 2');
+        const condition = getCol(row, 'condition');
+        const superAuditCondition = getCol(row, 'super audit condition');
+
+        const qValList = smartSplitOptions(rawQValOpts);
+        const ansValList = smartSplitOptions(rawAnsValOpts);
+        const ansValList1 = smartSplitOptions(rawAnsValOpts1);
+        const ansValList2 = smartSplitOptions(rawAnsValOpts2);
+
+        // Build validations array
+        const validations = [
+          qValCol || qValList.length > 0
+            ? {
+                type: 'question',
+                responseKey: qValCol || `${tag}_question_validation`,
+                label: 'Question Validation',
+                options: qValList,
+              }
+            : null,
+          ansValCol || ansValList.length > 0
+            ? {
+                type: 'answer',
+                responseKey: ansValCol || `${tag}_validation`,
+                label: 'Answer Validation',
+                options: ansValList,
+              }
+            : null,
+          ansValCol1 || ansValList1.length > 0
+            ? {
+                type: 'answer1',
+                responseKey: ansValCol1 || `${tag}_validation_1`,
+                label: 'Answer Validation 1',
+                options: ansValList1,
+              }
+            : null,
+          ansValCol2 || ansValList2.length > 0
+            ? {
+                type: 'answer2',
+                responseKey: ansValCol2 || `${tag}_validation_2`,
+                label: 'Answer Validation 2',
+                options: ansValList2,
+              }
+            : null,
+        ].filter(Boolean);
+
+        if (isAudited) {
+          totalAudited++;
+          if (qValCol || qValList.length > 0) withQVal++;
+          if (ansValCol || ansValList.length > 0) withAVal++;
+          if (ansValCol1 || ansValList1.length > 0) withAVal1++;
+          if (ansValCol2 || ansValList2.length > 0) withAVal2++;
+          if (actualCol) withActual++;
+          if (condition) withConditions++;
+        } else {
+          totalExcluded++;
+        }
+
+        const onlyAudited = extraMeta.onlyAudited === true;
+        if (onlyAudited && !isAudited) {
+          continue;
+        }
 
         const masterMeta = masterMetaByTag.get(tag) || {};
         const masterOpts = masterOptionsByTag.get(tag) || [];
@@ -1831,18 +1973,6 @@ const questionnaireService = {
           });
         }
 
-        const rawQValOpts = String(row['Question Validation Column Options'] || '').trim();
-        const rawAValOpts = String(
-          row['Answer  Validation Column Options'] ||
-          row['Answer Validation Column Options'] ||
-          row['Answer  Validation Options 1'] ||
-          row['Answer Validation Options 1'] ||
-          ''
-        ).trim();
-
-        const qValList = smartSplitOptions(rawQValOpts);
-        const aValList = smartSplitOptions(rawAValOpts);
-
         // Build options: prioritize master options, fallback to validation choices
         let options = [];
         const usedOptCodes = new Set();
@@ -1860,11 +1990,10 @@ const questionnaireService = {
               metadata: mo.metadata || {},
             };
           });
-        } else if (aValList.length > 0 && !tag.includes('phone') && !tag.includes('name') && tag !== 'introduction') {
-          options = aValList.map((txt, oIdx) => {
-            let optCode = `OPT_${oIdx + 1}`;
+        } else if (ansValList.length > 0 && !tag.includes('phone') && !tag.includes('name') && tag !== 'introduction') {
+          options = ansValList.map((txt, oIdx) => {
             return {
-              optionCode: optCode,
+              optionCode: `OPT_${oIdx + 1}`,
               label: txt,
               value: txt,
               displayOrder: oIdx + 1,
@@ -1874,13 +2003,48 @@ const questionnaireService = {
         }
 
         const qType = options.length > 0 ? 'SINGLE_SELECT' : 'TEXT';
-        const rawAudit = String(row['To Be Audited'] || row['To be audited'] || '').trim();
-        const toBeAudited = rawAudit.toLowerCase() === 'yes';
-        const onlyAudited = extraMeta.onlyAudited !== undefined ? Boolean(extraMeta.onlyAudited) : true;
 
-        if (onlyAudited && (row['To Be Audited'] !== undefined || row['To be audited'] !== undefined) && !toBeAudited) {
-          continue;
-        }
+        const metadataObj = {
+          toBeAudited: isAudited,
+          questionVisible: isVisible,
+          inputColumnFromDIU: diuInput || null,
+          inputColumn: diuInput || null,
+          questionInputFromDIU: qInputDiu || null,
+          questionInputFromDiu: qInputDiu || null,
+          questionValidationColumn: qValCol || null,
+          questionValidationOptions: qValList,
+          answerValidationColumn: ansValCol || null,
+          answerValidationOptions: ansValList,
+          answerValidationColumn1: ansValCol1 || null,
+          answerValidationOptions1: ansValList1,
+          answerValidationColumn2: ansValCol2 || null,
+          answerValidationOptions2: ansValList2,
+          actualColumn: actualCol || null,
+          condition: condition || null,
+          superAuditCondition: superAuditCondition || null,
+          validations,
+          pageId: secKey,
+          excelRow,
+          Column1: rawQText || tag,
+          Column2: tag,
+          Column3: isVisible ? 1 : 0,
+          Column4: isAudited ? 'Yes' : 'No',
+          Column5: diuInput,
+          Column6: qInputDiu,
+          Column7: qValCol,
+          Column8: ansValCol,
+          Column9: ansValCol1,
+          Column10: ansValCol2,
+          Column11: actualCol,
+          Column12: qValList.join('\n'),
+          Column13: ansValList.join('\n'),
+          Column14: ansValList1.join('\n'),
+          Column15: ansValList2.join('\n'),
+          Column16: condition,
+          Input: diuInput,
+          Output: qValCol,
+          Validation: qValList.join('\n'),
+        };
 
         const q = {
           id: `Q_${qIndex}`,
@@ -1889,26 +2053,47 @@ const questionnaireService = {
           questionTag: tag,
           questionType: qType,
           questionText: rawQText || tag,
-          isRequired: String(row['Question Visible'] || '1') === '1',
+          isRequired: isVisible,
           displayOrder: qIndex,
-          metadata: {
-            toBeAudited,
-            inputColumn: row['Input Column from DIU'] || null,
-            questionInputFromDiu: row['Question Input From DIU'] || null,
-            questionValidationColumn: row['Question Validation Column'] || null,
-            answerValidationColumn: row['Answer  Validation Column'] || row['Answer Validation Column'] || null,
-            actualColumn: row['Actual Column'] || null,
-            questionValidationOptions: qValList,
-            answerValidationOptions: aValList,
-            condition: row['Condition'] || null,
-            superAuditCondition: row['Super Audit Condition'] || null,
-            pageId: secKey,
-          },
+          metadata: metadataObj,
           options,
+          toBeAudited: isAudited,
+          questionVisible: isVisible,
+          inputColumnFromDIU: diuInput || null,
+          inputColumn: diuInput || null,
+          questionInputFromDIU: qInputDiu || null,
+          questionInputFromDiu: qInputDiu || null,
+          questionValidationColumn: qValCol || null,
+          questionValidationOptions: qValList,
+          answerValidationColumn: ansValCol || null,
+          answerValidationOptions: ansValList,
+          answerValidationColumn1: ansValCol1 || null,
+          answerValidationOptions1: ansValList1,
+          answerValidationColumn2: ansValCol2 || null,
+          answerValidationOptions2: ansValList2,
+          actualColumn: actualCol || null,
+          condition: condition || null,
+          superAuditCondition: superAuditCondition || null,
+          validations,
         };
 
         questionsList.push(q);
       }
+
+      uploadSummary = {
+        totalExcelRows: dataRows.length,
+        totalQuestionsParsed: questionsList.length,
+        totalAuditedQuestions: totalAudited,
+        totalExcludedQuestions: totalExcluded,
+        totalWithQuestionValidation: withQVal,
+        totalWithAnswerValidation: withAVal,
+        totalWithAnswerValidation1: withAVal1,
+        totalWithAnswerValidation2: withAVal2,
+        totalWithActualColumn: withActual,
+        totalWithConditions: withConditions,
+        warningsCount: parseWarnings.length,
+        warnings: parseWarnings.slice(0, 10),
+      };
     } else {
       // Fallback: Election format or Standard template
       const questionsSheetName =
@@ -2256,7 +2441,7 @@ const questionnaireService = {
         }
         importedOptions = allOptionsToInsert.length;
 
-        return { questionnaireId: id, importedSections, importedQuestions, importedOptions };
+        return { questionnaireId: id, importedSections, importedQuestions, importedOptions, summary: uploadSummary || null };
       });
     };
 
@@ -2327,7 +2512,7 @@ const questionnaireService = {
         }
       }
 
-      return { questionnaireId: id, importedSections, importedQuestions, importedOptions };
+      return { questionnaireId: id, importedSections, importedQuestions, importedOptions, summary: uploadSummary || null };
     };
 
     try {

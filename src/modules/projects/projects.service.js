@@ -1481,14 +1481,28 @@ class ProjectsService {
   async getBoundQuestionnaires(projectId, tenantContext = {}) {
     await tenancyService.getProjectById(projectId, tenantContext);
 
+    const hydrateBinding = async (binding) => {
+      let fullQ = null;
+      try {
+        fullQ = await questionnaireService.getFullQuestionnaire(binding.questionnaire_id);
+      } catch (_) {}
+      return {
+        ...binding,
+        sections: fullQ?.sections || binding.sections || [],
+        questions: fullQ?.questions || binding.questions || [],
+        canonical_schema: fullQ?.canonical_schema || binding.canonical_schema || null,
+      };
+    };
+
     if (!(await isDbProject(projectId))) {
-      return mockStore.getCampaignQuestionnaires(projectId);
+      const mockBindings = mockStore.getCampaignQuestionnaires(projectId) || [];
+      return Promise.all(mockBindings.map(hydrateBinding));
     }
 
     return withDbFallback(
       async () => {
         const project = await db('projects').where('id', projectId).first();
-        const bindings = await db('campaign_questionnaires')
+        let bindings = await db('campaign_questionnaires')
           .join('questionnaire_versions', 'campaign_questionnaires.questionnaire_id', 'questionnaire_versions.id')
           .select(
             'campaign_questionnaires.*',
@@ -1499,17 +1513,47 @@ class ProjectsService {
           )
           .where('campaign_questionnaires.project_id', projectId);
 
-        if (bindings.length === 0) {
-          const mockBindings = mockStore.getCampaignQuestionnaires(projectId);
-          if (mockBindings.length > 0) return mockBindings;
+        if (bindings.length === 0 && project?.questionnaire_id) {
+          const qv = await db('questionnaire_versions').where('id', project.questionnaire_id).first();
+          if (qv) {
+            bindings = [
+              {
+                project_id: projectId,
+                questionnaire_id: qv.id,
+                module: qv.module || 'CAPI',
+                is_primary: true,
+                questionnaire_name: qv.name,
+                version_number: qv.version_number,
+                status: qv.status,
+                checksum: qv.checksum,
+              },
+            ];
+          }
         }
 
-        return bindings.map((b) => ({
-          ...b,
-          is_current_active: project ? project.questionnaire_id === b.questionnaire_id : false,
-        }));
+        if (bindings.length === 0) {
+          const mockBindings = mockStore.getCampaignQuestionnaires(projectId);
+          if (mockBindings && mockBindings.length > 0) {
+            bindings = mockBindings;
+          }
+        }
+
+        const hydrated = await Promise.all(
+          bindings.map(async (b) => {
+            const hydratedData = await hydrateBinding(b);
+            return {
+              ...hydratedData,
+              is_current_active: project ? project.questionnaire_id === b.questionnaire_id || b.is_primary : true,
+            };
+          })
+        );
+
+        return hydrated;
       },
-      () => mockStore.getCampaignQuestionnaires(projectId)
+      async () => {
+        const mockBindings = mockStore.getCampaignQuestionnaires(projectId) || [];
+        return Promise.all(mockBindings.map(hydrateBinding));
+      }
     );
   }
 

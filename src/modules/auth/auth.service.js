@@ -84,8 +84,10 @@ const enrichUserWithOrgDetails = async (user) => {
     } catch (_) {}
   }
 
-  const defaultModules = ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT', 'AI_AUDIT', 'AUDIT'];
-  let enabledModules = org?.enabled_modules || defaultModules;
+  const defaultModules = [];
+  let enabledModules = org?.enabled_modules !== undefined && org?.enabled_modules !== null
+    ? org.enabled_modules
+    : (user.enabled_modules || defaultModules);
   if (typeof enabledModules === 'string') {
     try {
       enabledModules = JSON.parse(enabledModules);
@@ -94,14 +96,16 @@ const enrichUserWithOrgDetails = async (user) => {
     }
   }
   if (!Array.isArray(enabledModules)) {
-    enabledModules = defaultModules;
+    enabledModules = [];
   }
 
-  const isAiAuditEnabled = Boolean(
+  const isAiAuditExplicitlyDisabled = org?.enable_ai_audit === false || org?.enableAiAudit === false;
+  const isAiAuditEnabled = !isAiAuditExplicitlyDisabled && Boolean(
     org?.enable_ai_audit === true ||
     org?.enableAiAudit === true ||
     enabledModules.includes('AI_AUDIT') ||
-    enabledModules.includes('AI_AUDIT_QC')
+    enabledModules.includes('AI_AUDIT_QC') ||
+    Number(org?.audit_ai_licenses || 0) > 0
   );
 
   if (isAiAuditEnabled && !enabledModules.includes('AI_AUDIT')) {

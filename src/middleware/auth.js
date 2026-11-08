@@ -58,16 +58,6 @@ const authenticate = async (req, res, next) => {
               decoded.role_name = r.name;
             }
           }
-        } else if (decoded.organization_id || decoded.organizationId) {
-          const orgId = decoded.organization_id || decoded.organizationId;
-          const orgExists = await db('organizations').where('id', orgId).first();
-          if (!orgExists) {
-            const fallbackOrg = await db('organizations').where('is_active', true).first() || await db('organizations').first();
-            if (fallbackOrg) {
-              decoded.organization_id = fallbackOrg.id;
-              decoded.organizationId = fallbackOrg.id;
-            }
-          }
         }
       }
     } catch (_) {}

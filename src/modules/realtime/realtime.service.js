@@ -164,12 +164,15 @@ class RealtimeService {
 
     // Join contextual subscription rooms
     socket.join(`user:${user.id}`);
-    socket.join('workforce:all');
 
     const roleName = String(user.role || '').toUpperCase().replace(/\s+/g, '_');
     const isMasterAdmin = roleName === 'MASTER_ADMIN' || roleName === 'SUPER_ADMIN';
     const isOrgAdmin = roleName === 'ORGANIZATION_ADMIN' || roleName === 'ORG_ADMIN' || roleName === 'CLIENT_ADMIN';
     const isVendorAdmin = roleName === 'VENDOR_ADMIN' || roleName.includes('VENDOR');
+
+    if (isMasterAdmin) {
+      socket.join('workforce:all');
+    }
 
     if (user.vendorId) {
       socket.join(`vendor:${user.vendorId}`);

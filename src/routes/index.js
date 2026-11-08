@@ -144,15 +144,15 @@ router.use('/super-audit', ...subscriptionGate, requireModuleEnabled('SUPER_AUDI
 router.use('/tvc', ...subscriptionGate, requireModuleEnabled('TVC'), tvcRoutes);
 router.use('/feedback', ...subscriptionGate, requireModuleEnabled('FA'), feedbackRoutes);
 router.use('/fa', ...subscriptionGate, requireModuleEnabled('FA'), feedbackRoutes);
-router.use('/dialer', ...subscriptionGate, dialerRoutes);
+router.use('/dialer', ...subscriptionGate, requireModuleEnabled(['CATI', 'TVC']), dialerRoutes);
 router.use('/realtime', ...subscriptionGate, realtimeRoutes);
 
 // AI & Speech Intelligence
-router.use('/ai', ...subscriptionGate, aiRoutes);
+router.use('/ai', ...subscriptionGate, requireModuleEnabled('AI_AUDIT'), aiRoutes);
 
 // AI Voice Fraud & Biometric Speaker Verification Engine
-router.use('/voice-fraud', ...subscriptionGate, voiceFraudRoutes);
-router.use('/ai/voice-fraud', ...subscriptionGate, voiceFraudRoutes);
+router.use('/voice-fraud', ...subscriptionGate, requireModuleEnabled('AI_AUDIT'), voiceFraudRoutes);
+router.use('/ai/voice-fraud', ...subscriptionGate, requireModuleEnabled('AI_AUDIT'), voiceFraudRoutes);
 
 // Analytics & Reports
 router.use('/reports', ...subscriptionGate, reportsRoutes);

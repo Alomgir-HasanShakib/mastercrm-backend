@@ -9,6 +9,7 @@ const { authenticate } = require('../../middleware/auth');
 const { setTenantContext } = require('../../middleware/tenancy');
 const { checkPermission } = require('../../middleware/rbac');
 const { validate } = require('../../middleware/validator');
+const { requireModuleEnabled } = require('../../middleware/moduleGate');
 const reportsController = require('./reports.controller');
 const { commonFilterSchema, exportSchema } = require('./reports.validation');
 
@@ -48,6 +49,7 @@ router.get(
 router.get(
   '/cati',
   checkPermission('reports', 'read'),
+  requireModuleEnabled('CATI'),
   validate(commonFilterSchema, 'query'),
   reportsController.getCati
 );
@@ -60,6 +62,7 @@ router.get(
 router.get(
   '/capi',
   checkPermission('reports', 'read'),
+  requireModuleEnabled('CAPI'),
   validate(commonFilterSchema, 'query'),
   reportsController.getCapi
 );
@@ -72,6 +75,7 @@ router.get(
 router.get(
   '/super-audit',
   checkPermission('reports', 'read'),
+  requireModuleEnabled('SUPER_AUDIT'),
   validate(commonFilterSchema, 'query'),
   reportsController.getSuperAudit
 );
@@ -84,6 +88,7 @@ router.get(
 router.get(
   '/tvc',
   checkPermission('reports', 'read'),
+  requireModuleEnabled('TVC'),
   validate(commonFilterSchema, 'query'),
   reportsController.getTvc
 );
@@ -96,6 +101,7 @@ router.get(
 router.get(
   '/fa',
   checkPermission('reports', 'read'),
+  requireModuleEnabled('FA'),
   validate(commonFilterSchema, 'query'),
   reportsController.getFa
 );
@@ -108,6 +114,7 @@ router.get(
 router.get(
   '/cati/production',
   checkPermission('reports', 'read'),
+  requireModuleEnabled('CATI'),
   validate(commonFilterSchema, 'query'),
   reportsController.getCatiProduction
 );
@@ -120,6 +127,7 @@ router.get(
 router.get(
   '/cati/apr',
   checkPermission('reports', 'read'),
+  requireModuleEnabled('CATI'),
   validate(commonFilterSchema, 'query'),
   reportsController.getCatiApr
 );
@@ -132,6 +140,7 @@ router.get(
 router.get(
   '/capi/production',
   checkPermission('reports', 'read'),
+  requireModuleEnabled('CAPI'),
   validate(commonFilterSchema, 'query'),
   reportsController.getCapiProduction
 );
@@ -144,6 +153,7 @@ router.get(
 router.get(
   '/capi/apr',
   checkPermission('reports', 'read'),
+  requireModuleEnabled('CAPI'),
   validate(commonFilterSchema, 'query'),
   reportsController.getCapiApr
 );
@@ -156,6 +166,7 @@ router.get(
 router.get(
   '/super-audit/production',
   checkPermission('reports', 'read'),
+  requireModuleEnabled('SUPER_AUDIT'),
   validate(commonFilterSchema, 'query'),
   reportsController.getSuperAuditProduction
 );
@@ -168,6 +179,7 @@ router.get(
 router.get(
   '/super-audit/apr',
   checkPermission('reports', 'read'),
+  requireModuleEnabled('SUPER_AUDIT'),
   validate(commonFilterSchema, 'query'),
   reportsController.getSuperAuditApr
 );
@@ -180,6 +192,7 @@ router.get(
 router.get(
   '/tvc/cpr',
   checkPermission('reports', 'read'),
+  requireModuleEnabled('TVC'),
   validate(commonFilterSchema, 'query'),
   reportsController.getTvcCpr
 );
@@ -192,6 +205,7 @@ router.get(
 router.get(
   '/tvc/apr',
   checkPermission('reports', 'read'),
+  requireModuleEnabled('TVC'),
   validate(commonFilterSchema, 'query'),
   reportsController.getTvcApr
 );
@@ -204,6 +218,7 @@ router.get(
 router.get(
   '/fa/cdr',
   checkPermission('reports', 'read'),
+  requireModuleEnabled('FA'),
   validate(commonFilterSchema, 'query'),
   reportsController.getFaCdr
 );
@@ -216,6 +231,7 @@ router.get(
 router.get(
   '/fa/apr',
   checkPermission('reports', 'read'),
+  requireModuleEnabled('FA'),
   validate(commonFilterSchema, 'query'),
   reportsController.getFaApr
 );

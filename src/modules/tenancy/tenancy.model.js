@@ -7,10 +7,10 @@ const db = require('../../database/connection');
 const { withDbFallback } = db;
 const mockStore = require('../../database/mockStore');
 
-const DEFAULT_MODULES = ['CAPI', 'CATI', 'TVC', 'FA', 'SUPER_AUDIT', 'AI_AUDIT'];
+const DEFAULT_MODULES = [];
 
 const normalizeOrgModules = (modules) => {
-  if (!modules) return [...DEFAULT_MODULES];
+  if (!modules) return [];
   let list = modules;
   if (typeof modules === 'string') {
     try {
@@ -19,7 +19,7 @@ const normalizeOrgModules = (modules) => {
       list = modules.split(',').map((s) => s.trim());
     }
   }
-  if (!Array.isArray(list)) return [...DEFAULT_MODULES];
+  if (!Array.isArray(list)) return [];
 
   const map = {
     capi: 'CAPI',

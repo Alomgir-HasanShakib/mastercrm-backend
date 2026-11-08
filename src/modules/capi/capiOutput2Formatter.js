@@ -301,7 +301,13 @@ function formatLeadToOutput2Row(lead, decisionData = {}, user = {}, sn = null) {
   const getActual = (tag) => {
     const item = respMap[tag.toLowerCase()];
     if (item && item.actualAnswer) return item.actualAnswer;
+    if (item && item.actual_answer) return item.actual_answer;
     if (item && item.actual) return item.actual;
+    if (decisionData.responses && decisionData.responses[`${tag}_actual`]) return decisionData.responses[`${tag}_actual`];
+    if (decisionData.responses && decisionData.responses[tag]) return decisionData.responses[tag];
+    if (meta.responses && meta.responses[`${tag}_actual`]) return meta.responses[`${tag}_actual`];
+    if (meta[`${tag}_actual`]) return meta[`${tag}_actual`];
+    if (lead[`${tag}_actual`]) return lead[`${tag}_actual`];
     // Check if there is a mismatch note or answer
     if (item && item.status === 'FLAG') return item.answer || '';
     return '';

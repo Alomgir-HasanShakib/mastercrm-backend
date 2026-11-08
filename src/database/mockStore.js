@@ -4295,8 +4295,24 @@ const mockStore = {
    * Get all questionnaires bound to a campaign.
    */
   getCampaignQuestionnaires(projectId) {
-    const bindings = store.campaign_questionnaires.filter((b) => b.project_id === projectId);
+    let bindings = store.campaign_questionnaires.filter((b) => b.project_id === projectId);
     const project = store.projects.find((p) => p.id === projectId) || {};
+
+    if (bindings.length === 0 && project.questionnaire_id) {
+      const qv = store.questionnaire_versions.find((q) => q.id === project.questionnaire_id);
+      if (qv) {
+        bindings = [
+          {
+            id: `cq-${project.id}`,
+            project_id: projectId,
+            questionnaire_id: qv.id,
+            module: qv.module || 'CAPI',
+            is_primary: true,
+            bound_at: project.created_at || new Date(),
+          },
+        ];
+      }
+    }
 
     return bindings.map((b) => {
       const qv = store.questionnaire_versions.find((q) => q.id === b.questionnaire_id) || {};
@@ -4310,7 +4326,9 @@ const mockStore = {
         checksum: qv.checksum,
         sections_count: sections.length,
         questions_count: questions.length,
-        is_current_active: project.questionnaire_id === b.questionnaire_id,
+        sections,
+        questions,
+        is_current_active: project.questionnaire_id === b.questionnaire_id || b.is_primary,
       };
     });
   },

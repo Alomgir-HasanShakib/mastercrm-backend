@@ -5,6 +5,10 @@
 
 const reportsService = require('./reports.service');
 const { success } = require('../../utils/response');
+const { ModuleNotEnabledError } = require('../../utils/errors');
+const { normalizeModulesList } = require('../../middleware/moduleGate');
+const { db, withDbFallback } = require('../../database/connection');
+const mockStore = require('../../database/mockStore');
 
 /**
  * Extracts and merges query filters with tenant scoping context
@@ -219,9 +223,38 @@ const reportsController = {
     try {
       const { reportType, format = 'xlsx', filters = {} } = req.body;
       const tenantContext = req.tenantContext || {};
+      const user = req.user || {};
+      const userRole = (user.role || user.roleName || user.role_name || '').toUpperCase().replace(/\s+/g, '_');
+      const isMaster = userRole === 'MASTER_ADMIN' || userRole === 'SUPER_ADMIN' || Boolean(tenantContext.isMasterAdmin);
+
+      // Verify module entitlement for the requested report type
+      if (!isMaster) {
+        const orgId = tenantContext.organizationId || user.organizationId || user.organization_id;
+        const org = await withDbFallback(
+          () => db('organizations').where('id', orgId).first(),
+          () => mockStore.findOne('organizations', { id: orgId }) || mockStore.organizations?.[0]
+        );
+        const enabledModules = normalizeModulesList(org?.enabled_modules || user.enabled_modules);
+        
+        let requiredMod = null;
+        if (reportType.startsWith('cati')) requiredMod = 'CATI';
+        else if (reportType.startsWith('capi')) requiredMod = 'CAPI';
+        else if (reportType.startsWith('super_audit')) requiredMod = 'SUPER_AUDIT';
+        else if (reportType.startsWith('tvc')) requiredMod = 'TVC';
+        else if (reportType.startsWith('fa')) requiredMod = 'FA';
+
+        if (requiredMod && !enabledModules.includes(requiredMod)) {
+          throw new ModuleNotEnabledError(`Export report for '${requiredMod}' is not enabled for your organization.`, {
+            module: requiredMod,
+            organizationId: orgId,
+            enabledModules,
+          });
+        }
+      }
 
       const scopedFilters = {
         ...filters,
+        organizationId: !isMaster ? (tenantContext.organizationId || user.organizationId || user.organization_id) : (filters.organizationId || null),
         vendorId: tenantContext.vendorId || filters.vendorId || null,
       };
 

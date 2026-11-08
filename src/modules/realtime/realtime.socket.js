@@ -193,11 +193,45 @@ function initSocketServer(httpServer) {
       logger.debug(`[SocketServer] User ${socket.user?.id} (${roleName}) subscribed to radar channels.`);
     });
 
-    // Custom room subscription
+    // Custom room subscription with strict organization isolation
     socket.on('room:join', (roomName) => {
       if (typeof roomName === 'string' && roomName.trim()) {
-        socket.join(roomName.trim());
-        logger.debug(`[SocketServer] Socket ${socket.id} joined custom room: ${roomName}`);
+        const cleanRoom = roomName.trim();
+        const roleName = String(socket.user?.role || '').toUpperCase().replace(/[\s-]+/g, '_');
+        const isMaster = roleName === 'MASTER_ADMIN' || roleName === 'SUPER_ADMIN';
+        const userOrgId = String(socket.user?.organizationId || socket.user?.organization_id || '');
+        const userVendorId = String(socket.user?.vendorId || socket.user?.vendor_id || '');
+
+        // Prevent cross-organization real-time subscription leakage
+        if (!isMaster) {
+          if (cleanRoom.startsWith('org:') || cleanRoom.startsWith('radar:org:')) {
+            const requestedOrgId = cleanRoom.split(':').pop();
+            if (!userOrgId || requestedOrgId !== userOrgId) {
+              logger.warn(`[SocketServer] Unauthorized room:join attempt by user ${socket.user?.id} to ${cleanRoom}`);
+              socket.emit('error', { message: 'Forbidden: Cannot subscribe to another organization room.' });
+              return;
+            }
+          } else if (cleanRoom.startsWith('vendor:') || cleanRoom.startsWith('radar:vendor:')) {
+            const requestedVendorId = cleanRoom.split(':').pop();
+            if (!userVendorId || requestedVendorId !== userVendorId) {
+              logger.warn(`[SocketServer] Unauthorized room:join attempt by user ${socket.user?.id} to ${cleanRoom}`);
+              socket.emit('error', { message: 'Forbidden: Cannot subscribe to another vendor room.' });
+              return;
+            }
+          } else if (
+            cleanRoom === 'radar:live' ||
+            cleanRoom === 'workforce:all' ||
+            cleanRoom.startsWith('role:MASTER') ||
+            cleanRoom.startsWith('role:SUPER')
+          ) {
+            logger.warn(`[SocketServer] Unauthorized room:join attempt by user ${socket.user?.id} to global room ${cleanRoom}`);
+            socket.emit('error', { message: 'Forbidden: Elevated permissions required to join global rooms.' });
+            return;
+          }
+        }
+
+        socket.join(cleanRoom);
+        logger.debug(`[SocketServer] Socket ${socket.id} joined custom room: ${cleanRoom}`);
       }
     });
 
