@@ -180,41 +180,87 @@ async function getQuestionsForProject(projectId, options = {}) {
 
             let actualCol = q.actual_tag || null;
             let answerValCol = q.validation_tag || null;
+            let answerValCol1 = null;
+            let answerValCol2 = null;
             let questionValCol = null;
+            let aValidationOpts1 = [];
+            let aValidationOpts2 = [];
 
-            if (opts.length > 0 && opts[0].metadata) {
-              const meta = typeof opts[0].metadata === 'object' ? opts[0].metadata : JSON.parse(opts[0].metadata || '{}');
-              if (meta.toBeAudited !== undefined) {
-                toBeAudited = Boolean(meta.toBeAudited);
-              }
-              if (Array.isArray(meta.answerValidationOptions) && meta.answerValidationOptions.length > 0) {
-                aValidationOpts = meta.answerValidationOptions;
-              }
-              if (Array.isArray(meta.questionValidationOptions) && meta.questionValidationOptions.length > 0) {
-                qValidationOpts = meta.questionValidationOptions;
-              }
-              if (meta.actualColumn) actualCol = meta.actualColumn;
-              if (meta.answerValidationColumn) answerValCol = meta.answerValidationColumn;
-              if (meta.questionValidationColumn) questionValCol = meta.questionValidationColumn;
+            let qMeta = {};
+            if (q.metadata) {
+              try {
+                qMeta = typeof q.metadata === 'object' ? q.metadata : JSON.parse(q.metadata || '{}');
+              } catch (_) {}
             }
+
+            let optMeta = {};
+            if (opts.length > 0 && opts[0].metadata) {
+              try {
+                optMeta = typeof opts[0].metadata === 'object' ? opts[0].metadata : JSON.parse(opts[0].metadata || '{}');
+              } catch (_) {}
+            }
+
+            const meta = { ...optMeta, ...qMeta };
+
+            if (meta.toBeAudited !== undefined) {
+              toBeAudited = Boolean(meta.toBeAudited === true || meta.toBeAudited === 'Yes' || meta.toBeAudited === 'yes');
+            }
+            if (Array.isArray(meta.answerValidationOptions) && meta.answerValidationOptions.length > 0) {
+              aValidationOpts = meta.answerValidationOptions;
+            }
+            if (Array.isArray(meta.questionValidationOptions) && meta.questionValidationOptions.length > 0) {
+              qValidationOpts = meta.questionValidationOptions;
+            }
+            if (Array.isArray(meta.answerValidationOptions1) && meta.answerValidationOptions1.length > 0) {
+              aValidationOpts1 = meta.answerValidationOptions1;
+            } else if (typeof meta.Column14 === 'string' && meta.Column14.trim()) {
+              aValidationOpts1 = meta.Column14.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            }
+            if (Array.isArray(meta.answerValidationOptions2) && meta.answerValidationOptions2.length > 0) {
+              aValidationOpts2 = meta.answerValidationOptions2;
+            } else if (typeof meta.Column15 === 'string' && meta.Column15.trim()) {
+              aValidationOpts2 = meta.Column15.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            }
+
+            if (meta.actualColumn) actualCol = meta.actualColumn;
+            if (meta.answerValidationColumn) answerValCol = meta.answerValidationColumn;
+            if (meta.answerValidationColumn1) answerValCol1 = meta.answerValidationColumn1;
+            if (meta.answerValidationColumn2) answerValCol2 = meta.answerValidationColumn2;
+            if (meta.questionValidationColumn) questionValCol = meta.questionValidationColumn;
 
             const shouldInclude = (options.includeAll || options.onlyAudited === false) ? true : toBeAudited;
 
             if (shouldInclude) {
+              const hasAnsVal2 = Boolean((Array.isArray(aValidationOpts1) && aValidationOpts1.length > 0) || answerValCol1);
+              const hasAnsVal3 = Boolean((Array.isArray(aValidationOpts2) && aValidationOpts2.length > 0) || answerValCol2);
+
               auditedItems.push({
                 id: q.id || idx + 1,
                 code: q.question_tag || q.input_tag || q.question_no,
                 question_no: q.question_no,
                 question_tag: q.question_tag,
-                input_tag: q.input_tag,
+                input_tag: q.input_tag || meta.inputColumnDiu || meta.inputColumn || q.question_tag,
                 actual_tag: actualCol,
                 validation_tag: answerValCol,
+                answerValidationColumn: answerValCol,
+                answerValidationColumn1: answerValCol1,
+                answerValidationColumn2: answerValCol2,
+                questionValidationColumn: questionValCol,
                 title: `${q.question_no}. ${q.question_tag || 'Verification'}`,
                 questionText: q.question_text,
                 timestampSeconds: idx * 15 + 5,
                 timestampLabel: `${Math.floor((idx * 15 + 5) / 60).toString().padStart(2, '0')}:${((idx * 15 + 5) % 60).toString().padStart(2, '0')}`,
                 questionValidationOptions: qValidationOpts,
                 answerValidationOptions: aValidationOpts,
+                answerValidationOptions1: aValidationOpts1,
+                answerValidationOptions2: aValidationOpts2,
+                hasQuestionValidation: Boolean((Array.isArray(qValidationOpts) && qValidationOpts.length > 0) || questionValCol),
+                hasAnswerValidation: Boolean((Array.isArray(aValidationOpts) && aValidationOpts.length > 0) || answerValCol),
+                hasAnsVal2,
+                hasAnsVal3,
+                condition: meta.condition || meta.Column16 || null,
+                superAuditCondition: meta.superAuditCondition || null,
+                metadata: meta,
                 options: opts.map(o => ({ label: o.label || o.value, value: o.value })),
                 questionDecision: 'Asked Right',
                 auditorDecision: 'Yes - Verified',

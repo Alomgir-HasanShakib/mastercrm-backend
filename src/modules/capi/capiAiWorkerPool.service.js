@@ -773,6 +773,8 @@ function evaluateLeadWithAi(lead, workerId, projectQuestions = []) {
         itemScore = 0;
         questionDecision = 'Not Audible - Agent did not ask the question';
         answerDecision = 'Not Audible - No response';
+        answerDecision1 = '';
+        answerDecision2 = '';
       } else if (hasSubtleMismatch && idx === (hash % effectiveQuestions.length)) {
         itemStatus = 'FLAG';
         itemScore = 65;
@@ -780,6 +782,19 @@ function evaluateLeadWithAi(lead, workerId, projectQuestions = []) {
         answerDecision = 'Mismatch';
         // AUTOMATIC ACTUAL FIELD POPULATION: Extract spoken answer from original audio
         actualAnswer = extractActualSpokenAnswer(q, metadata, lead, hash, { startSec, endSec });
+        if (q.hasAnsVal2 || (Array.isArray(q.answerValidationOptions1) && q.answerValidationOptions1.length > 0)) {
+          const opts1 = q.answerValidationOptions1 || q.metadata?.answerValidationOptions1 || [];
+          answerDecision1 = opts1[0] || 'Yes - No Prompting Done';
+        }
+      } else if (q.hasAnsVal2 || (Array.isArray(q.answerValidationOptions1) && q.answerValidationOptions1.length > 0)) {
+        // Multi-level validation question (e.g. winner_perception_state, cm_choice)
+        const opts0 = q.answerValidationOptions || q.metadata?.answerValidationOptions || [];
+        answerDecision = opts0.includes('Respondent answer without Prompting')
+          ? 'Respondent answer without Prompting'
+          : (opts0[0] || 'Respondent answer without Prompting');
+        const opts1 = q.answerValidationOptions1 || q.metadata?.answerValidationOptions1 || [];
+        answerDecision1 = opts1[0] || 'Yes - No Prompting Done';
+        answerDecision2 = '';
       }
 
       return {
@@ -853,15 +868,15 @@ function evaluateLeadWithAi(lead, workerId, projectQuestions = []) {
     }
 
     // 3. Answer validation 1 (Validation 2)
-    const ansValCol1 = origQ.answerValidationColumn1 || origQ.metadata?.answerValidationColumn1;
-    if (ansValCol1) {
-      dynamicResponses[ansValCol1] = item.answer_decision_1 || 'Asked Right / No Prompting';
+    const ansValCol1 = origQ.answerValidationColumn1 || origQ.metadata?.answerValidationColumn1 || (origQ.hasAnsVal2 ? `${qTag}_validation_1` : null);
+    if (ansValCol1 && item.answer_decision_1) {
+      dynamicResponses[ansValCol1] = item.answer_decision_1;
     }
 
     // 4. Answer validation 2 (Validation 3)
-    const ansValCol2 = origQ.answerValidationColumn2 || origQ.metadata?.answerValidationColumn2;
-    if (ansValCol2) {
-      dynamicResponses[ansValCol2] = item.answer_decision_2 || 'Asked Right / No Prompting';
+    const ansValCol2 = origQ.answerValidationColumn2 || origQ.metadata?.answerValidationColumn2 || (origQ.hasAnsVal3 ? `${qTag}_validation_2` : null);
+    if (ansValCol2 && item.answer_decision_2) {
+      dynamicResponses[ansValCol2] = item.answer_decision_2;
     }
 
     // 5. Actual column
@@ -1366,6 +1381,7 @@ module.exports = {
   getCurrentIstTime,
   getAiUserId,
   fetchNextLeadForAi,
+  evaluateLeadWithAi,
   getCurrentlyProcessingLeadIds,
   clearCurrentlyProcessingLeadIds,
   isLeadCurrentlyProcessing,

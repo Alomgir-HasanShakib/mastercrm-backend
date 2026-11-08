@@ -423,8 +423,8 @@ class ProjectsController {
       const hourlySyncService = require('../../services/hourlyCampaignSync.service');
       const payload = {
         tableName: req.body?.tableName || req.body?.client_table_name || req.body?.input_table,
-        limit: req.body?.limit,
-        fetchAll: req.body?.fetchAll,
+        limit: req.body?.limit !== undefined ? req.body.limit : 'all',
+        fetchAll: req.body?.fetchAll !== undefined ? req.body.fetchAll : true,
         triggeredBy: 'MANUAL_TRIGGER',
       };
       const result = await hourlySyncService.syncCampaignLeads(req.params.id, payload, req.tenantContext);

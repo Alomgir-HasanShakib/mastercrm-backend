@@ -51,7 +51,7 @@ const auditItemEvaluationSchema = Joi.object({
   title: Joi.string().allow('', null).optional(),
   originalValue: Joi.any().allow(null).optional(),
   auditedValue: Joi.any().allow(null).optional(),
-  status: Joi.string().valid('PASS', 'FAIL', 'AMBIGUOUS', 'SKIPPED').allow('', null).optional(),
+  status: Joi.string().valid('PASS', 'FAIL', 'AMBIGUOUS', 'SKIPPED', 'FLAG', 'MISMATCH', 'REVIEW').allow('', null).optional(),
   questionDecision: Joi.string().allow('', null).optional(),
   answerDecision: Joi.string().allow('', null).optional(),
   auditorDecision: Joi.string().allow('', null).optional(),
@@ -68,7 +68,7 @@ const saveItemsSchema = Joi.object({
 }).unknown(true);
 
 const submitDecisionSchema = Joi.object({
-  decision: Joi.string().valid('PASS', 'FAIL', 'ESCALATE', 'FLAG_SUPER_AUDIT').required(),
+  decision: Joi.string().valid('PASS', 'FAIL', 'ESCALATE', 'FLAG_SUPER_AUDIT', 'REVIEW').required(),
   score: Joi.number().min(0).max(100).optional(),
   audioQualityScore: Joi.number().min(0).max(100).optional(),
   audioStatus: Joi.string().allow('', null).optional(),

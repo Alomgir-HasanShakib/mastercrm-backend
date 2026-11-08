@@ -54,9 +54,10 @@ const fetchTableRecords = async (tableName, orgId, projectId, options = {}) => {
     return { rows: [], sourceInfo: 'INVALID_TABLE_NAME' };
   }
 
+  const isManualPull = options.triggeredBy === 'MANUAL_TRIGGER';
   const requestedLimit = options.limit !== undefined && options.limit !== null && options.limit !== '' && options.limit !== 'all' && options.limit !== 'ALL' && parseInt(options.limit, 10) > 0
     ? parseInt(options.limit, 10)
-    : (options.limit === 'all' || options.fetchAll ? null : 1000);
+    : (options.limit === 'all' || options.fetchAll || isManualPull ? null : 1000);
 
   const limitClause = requestedLimit ? `LIMIT ${requestedLimit}` : '';
 
@@ -392,45 +393,24 @@ const _executeSyncCampaignLeads = async (projectId, options = {}, tenantContext 
       const { rows: fetchedRows, sourceInfo } = tableData;
       const clientTableCount = Math.max(rawClientCount || 0, fetchedRows.length);
 
-      // 4. Extract incoming keys for ultra-fast indexed deduplication (avoids downloading entire campaign leads)
-      const incomingSubIds = [];
-      const incomingPhones = [];
-      for (const row of fetchedRows) {
-        const subId = String(
-          row.submission_id_dr || row.submission_id || row.interview_id || row.external_id || row.lead_id || row.id || ''
-        ).trim();
-        const phone = String(row.phone_number || row.phone_no || row.phone || row.mobile || '').trim();
-        if (subId) incomingSubIds.push(subId);
-        if (phone) incomingPhones.push(phone);
-      }
-
-      const [existingLeadSubRows, existingSyncedSubRows, existingLeadPhoneRows] = await Promise.all([
-        incomingSubIds.length > 0
-          ? db('campaign_leads')
-              .where('project_id', projectId)
-              .whereIn('external_id', incomingSubIds)
-              .select('external_id')
-          : [],
-        incomingSubIds.length > 0
-          ? db('campaign_synced_records')
-              .where('project_id', projectId)
-              .whereIn('external_id', incomingSubIds)
-              .select('external_id')
-              .catch(() => [])
-          : [],
-        incomingPhones.length > 0
-          ? db('campaign_leads')
-              .where('project_id', projectId)
-              .whereIn('phone_number', incomingPhones)
-              .select('phone_number')
-          : [],
+      // 4. Resolve existing campaign records for strict deduplication
+      const [existingLeadRows, existingSyncedSubRows] = await Promise.all([
+        db('campaign_leads')
+          .where('project_id', projectId)
+          .select('external_id', 'phone_number'),
+        db('campaign_synced_records')
+          .where('project_id', projectId)
+          .select('external_id')
+          .catch(() => []),
       ]);
 
       const existingSubmissionIds = new Set([
-        ...existingLeadSubRows.map((r) => String(r.external_id).trim()),
-        ...existingSyncedSubRows.map((r) => String(r.external_id).trim()),
+        ...existingLeadRows.map((r) => String(r.external_id || '').trim()).filter(Boolean),
+        ...existingSyncedSubRows.map((r) => String(r.external_id || '').trim()).filter(Boolean),
       ]);
-      const existingPhones = new Set(existingLeadPhoneRows.map((r) => String(r.phone_number).trim()));
+      const existingPhones = new Set(
+        existingLeadRows.map((r) => String(r.phone_number || '').trim()).filter(Boolean)
+      );
 
       // 5. Deduplicate and construct new leads to insert
       const now = new Date();
@@ -542,9 +522,9 @@ const _executeSyncCampaignLeads = async (projectId, options = {}, tenantContext 
         });
       }
 
-      // 6. Batch Insert New Leads into PostgreSQL in safe chunks of 100
+      // 6. Batch Insert New Leads into PostgreSQL in safe chunks of 500
       if (newLeads.length > 0) {
-        await db.batchInsert('campaign_leads', newLeads, 100);
+        await db.batchInsert('campaign_leads', newLeads, 500);
         logger.info(`[HourlyCampaignSync] Inserted ${newLeads.length} new leads into campaign_leads for campaign '${projectId}'.`);
 
         // Record into campaign_synced_records for permanent tracking
@@ -557,19 +537,16 @@ const _executeSyncCampaignLeads = async (projectId, options = {}, tenantContext 
             phone_number: nl.phone_number,
             synced_at: now,
           }));
-          await db.batchInsert('campaign_synced_records', syncTrackingRows, 100).catch(() => null);
+          await db.batchInsert('campaign_synced_records', syncTrackingRows, 500).catch(() => null);
         } catch (_) {}
 
         // Check if submissions table exists and insert missing submissions
         try {
           const hasSubsTable = await db.schema.hasTable('submissions');
           if (hasSubsTable && newSubmissions.length > 0) {
-            const existingSubIds = new Set(
-              (await db('submissions').where('project_id', projectId).select('submission_id')).map((r) => r.submission_id)
-            );
-            const subsToInsert = newSubmissions.filter((s) => !existingSubIds.has(s.submission_id));
-            if (subsToInsert.length > 0) {
-              await db.batchInsert('submissions', subsToInsert, 100);
+            for (let i = 0; i < newSubmissions.length; i += 500) {
+              const chunk = newSubmissions.slice(i, i + 500);
+              await db('submissions').insert(chunk).onConflict('submission_id').ignore();
             }
           }
         } catch (subErr) {

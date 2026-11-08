@@ -592,15 +592,35 @@ const questionnaireService = {
                 conditions: q.conditions || metaObj.conditions || [],
                 toBeAudited: q.toBeAudited !== undefined ? q.toBeAudited : metaObj.toBeAudited,
                 inputColumn: q.inputColumn !== undefined ? q.inputColumn : metaObj.inputColumn,
+                inputColumnDiu: q.inputColumnDiu || q.inputColumn || metaObj.inputColumnDiu || metaObj.inputColumn,
                 questionInputFromDiu: q.questionInputFromDiu || metaObj.questionInputFromDiu || null,
                 questionValidationColumn: q.questionValidationColumn !== undefined ? q.questionValidationColumn : metaObj.questionValidationColumn,
                 answerValidationColumn: q.answerValidationColumn !== undefined ? q.answerValidationColumn : metaObj.answerValidationColumn,
+                answerValidationColumn1: q.answerValidationColumn1 !== undefined ? q.answerValidationColumn1 : metaObj.answerValidationColumn1,
+                answerValidationColumn2: q.answerValidationColumn2 !== undefined ? q.answerValidationColumn2 : metaObj.answerValidationColumn2,
                 actualColumn: q.actualColumn !== undefined ? q.actualColumn : metaObj.actualColumn,
                 questionValidationOptions: q.questionValidationOptions || metaObj.questionValidationOptions || [],
                 answerValidationOptions: q.answerValidationOptions || metaObj.answerValidationOptions || [],
+                answerValidationOptions1: q.answerValidationOptions1 || metaObj.answerValidationOptions1 || [],
+                answerValidationOptions2: q.answerValidationOptions2 || metaObj.answerValidationOptions2 || [],
                 condition: q.condition || metaObj.condition || null,
                 superAuditCondition: q.superAuditCondition || metaObj.superAuditCondition || null,
+                validations: q.validations || metaObj.validations || [],
+                Column7: q.Column7 || metaObj.Column7 || q.questionValidationColumn,
+                Column8: q.Column8 || metaObj.Column8 || q.answerValidationColumn,
+                Column9: q.Column9 || metaObj.Column9 || q.answerValidationColumn1,
+                Column10: q.Column10 || metaObj.Column10 || q.answerValidationColumn2,
+                Column11: q.Column11 || metaObj.Column11 || q.actualColumn,
+                Column12: q.Column12 || metaObj.Column12,
+                Column13: q.Column13 || metaObj.Column13,
+                Column14: q.Column14 || metaObj.Column14,
+                Column15: q.Column15 || metaObj.Column15,
+                Column16: q.Column16 || metaObj.Column16 || q.condition,
               };
+
+              const resolvedInputTag = q.input_tag || q.inputColumn || mergedMeta.inputColumnDiu || null;
+              const resolvedValTag = q.validation_tag || q.answerValidationColumn || mergedMeta.answerValidationColumn || null;
+              const resolvedActualTag = q.actual_tag || q.actualColumn || mergedMeta.actualColumn || null;
 
               const [createdQ] = await trx('questions').insert({
                 questionnaire_version_id: id,
@@ -612,6 +632,9 @@ const questionnaireService = {
                 help_text: q.helpText || q.help_text || q.q?.help || null,
                 is_required: q.required !== false && q.is_required !== false,
                 display_order: q.displayOrder || qIdx + 1,
+                input_tag: resolvedInputTag,
+                validation_tag: resolvedValTag,
+                actual_tag: resolvedActualTag,
                 metadata: JSON.stringify(mergedMeta),
               }).returning('*');
 
@@ -2171,6 +2194,8 @@ const questionnaireService = {
                 questionInputFromDiu: row['Question Input From DIU'] || null,
                 questionValidationColumn: row['Question Validation Column'] || null,
                 answerValidationColumn: row['Answer  Validation Column'] || row['Answer Validation Column'] || null,
+                answerValidationColumn1: row['Answer  Validation Column 1'] || row['Answer Validation Column 1'] || null,
+                answerValidationColumn2: row['Answer  Validation Column 2'] || row['Answer Validation Column 2'] || null,
                 actualColumn: row['Actual Column'] || null,
                 dropdownOptions: row['dropdown Options'] || null,
                 skipToId: row['Skip To ID'] || null,

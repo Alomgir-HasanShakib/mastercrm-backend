@@ -5,17 +5,29 @@
 
 const Joi = require('joi');
 
+const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const optionalUuid = Joi.string().allow('', null).custom((value) => {
+  if (!value || value === '' || value === 'undefined' || value === 'null' || value === '[object Object]') {
+    return undefined;
+  }
+  const clean = String(value).trim();
+  if (!uuidRegex.test(clean)) {
+    return undefined;
+  }
+  return clean;
+}).optional();
+
 const listConfigsSchema = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   limit: Joi.number().integer().min(1).max(100).default(20),
-  organizationId: Joi.string().uuid().optional(),
+  organizationId: optionalUuid,
   dbType: Joi.string().valid('POSTGRES', 'MYSQL', 'REST_API').optional(),
   status: Joi.string().valid('IDLE', 'SYNCING', 'ERROR', 'SUCCESS').optional(),
   isActive: Joi.boolean().optional(),
 });
 
 const createConfigSchema = Joi.object({
-  organizationId: Joi.string().uuid().optional(),
+  organizationId: optionalUuid,
   name: Joi.string().trim().max(255).required().messages({
     'any.required': 'Sync configuration name is required',
   }),
@@ -45,7 +57,7 @@ const listLogsSchema = Joi.object({
 });
 
 const testConnectionSchema = Joi.object({
-  configId: Joi.string().uuid().optional(),
+  configId: optionalUuid,
   dbType: Joi.string().valid('POSTGRES', 'MYSQL', 'REST_API').default('POSTGRES'),
   host: Joi.string().trim().max(255).allow('', null).optional(),
   port: Joi.number().integer().min(1).max(65535).optional(),
@@ -57,8 +69,9 @@ const testConnectionSchema = Joi.object({
 });
 
 const pullCampaignDataSchema = Joi.object({
-  campaignId: Joi.string().uuid().optional(),
-  projectId: Joi.string().uuid().optional(),
+  campaignId: optionalUuid,
+  projectId: optionalUuid,
+  organizationId: optionalUuid,
   tableName: Joi.string().trim().max(128).optional(),
   sqlQuery: Joi.string().trim().max(2000).allow('', null).optional(),
   limit: Joi.number().integer().min(1).max(100000).allow(null).optional(),
@@ -74,6 +87,7 @@ const saveActiveConfigSchema = Joi.object({
   password: Joi.string().allow('', null).optional(),
   sslMode: Joi.string().trim().max(50).allow('', null).optional(),
   connectionString: Joi.string().trim().allow('', null).optional(),
+  organizationId: optionalUuid,
   syncInterval: Joi.string().valid('CONTINUOUS', '1_MIN', '5_MIN', '15_MIN', '1_HOUR').default('15_MIN'),
   isActive: Joi.boolean().default(true),
   mappingConfig: Joi.object().optional(),

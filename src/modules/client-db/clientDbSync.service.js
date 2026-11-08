@@ -87,8 +87,8 @@ const listConfigs = async (filters = {}, pagination = {}, tenantContext = {}) =>
 
       if (!tenantContext.isMasterAdmin && tenantContext.organizationId) {
         query = query.where('client_db_sync_configs.organization_id', tenantContext.organizationId);
-      } else if (filters.organizationId) {
-        query = query.where('client_db_sync_configs.organization_id', filters.organizationId);
+      } else if (filters.organizationId && typeof filters.organizationId === 'string' && filters.organizationId.trim() !== '') {
+        query = query.where('client_db_sync_configs.organization_id', filters.organizationId.trim());
       }
 
       if (filters.dbType) {
@@ -142,6 +142,8 @@ const listConfigs = async (filters = {}, pagination = {}, tenantContext = {}) =>
 
       if (!tenantContext.isMasterAdmin && tenantContext.organizationId) {
         items = items.filter((c) => c.organization_id === tenantContext.organizationId);
+      } else if (filters.organizationId && typeof filters.organizationId === 'string' && filters.organizationId.trim() !== '') {
+        items = items.filter((c) => c.organization_id === filters.organizationId.trim());
       }
 
       return {
