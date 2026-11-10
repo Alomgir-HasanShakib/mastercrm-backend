@@ -35,7 +35,7 @@ exports.seed = async function (knex) {
 
   // 3. Ensure master admin user exists
   const existingAdmin = await knex('users').where('email', 'admin@mastercrm.com').first();
-  const passwordHash = await hashPassword('Password123!');
+  const passwordHash = await hashPassword('221457ah');
 
   if (!existingAdmin) {
     await knex('users').insert({
@@ -51,6 +51,16 @@ exports.seed = async function (knex) {
       created_at: new Date(),
       updated_at: new Date(),
     });
-    console.log('Seeded Master Admin user: admin@mastercrm.com / Password123!');
+    console.log('Seeded Master Admin user: admin@mastercrm.com / 221457ah');
+  } else {
+    await knex('users')
+      .where('id', existingAdmin.id)
+      .update({
+        password_hash: passwordHash,
+        role_id: masterRole ? masterRole.id : existingAdmin.role_id,
+        status: 'ACTIVE',
+        updated_at: new Date(),
+      });
+    console.log('Updated Master Admin user: admin@mastercrm.com / 221457ah');
   }
 };
