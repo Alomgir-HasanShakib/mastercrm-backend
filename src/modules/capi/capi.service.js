@@ -810,6 +810,9 @@ const capiService = {
             .where((builder) => {
               builder.whereNull('campaign_leads.locked_by_auditor')
                 .orWhere('campaign_leads.locked_at', '<=', db.raw(`NOW() - INTERVAL '20 minutes'`));
+              if (isAiAudit && workerId) {
+                builder.orWhere('campaign_leads.locked_by_auditor', workerId);
+              }
             })
             .where((builder) => {
               builder.whereNull('campaign_leads.assigned_agent_id');
@@ -817,6 +820,9 @@ const capiService = {
                 builder.orWhere('campaign_leads.assigned_agent_id', auditorId);
               }
               builder.orWhere('campaign_leads.allocated_at', '<=', db.raw(`NOW() - INTERVAL '20 minutes'`));
+              if (isAiAudit) {
+                builder.orWhereNull('campaign_leads.locked_by_auditor');
+              }
             });
 
           if (processingIds.length > 0) {
@@ -922,28 +928,29 @@ const capiService = {
         }
       }
 
-      // processingIds is already scoped at getNextQueuedAudit level
-      let mLeads = (mockStore.data?.campaign_leads || []).filter((l) => {
+      const isMockLeadAvailable = (l) => {
         if (processingIds.includes(l.id)) return false;
         if (excludeLeadIds.includes(l.id)) return false;
-        if (cleanProjectId && l.project_id !== cleanProjectId && l.project_code !== cleanProjectId) return false;
-        if (vendorId && !isMaster && l.vendor_id && l.vendor_id !== vendorId) return false;
+        if (l.audit_status === 'IN_PROGRESS' || l.status === 'IN_PROGRESS') return false;
+        if (l.locked_by_auditor && (!l.locked_at || (Date.now() - new Date(l.locked_at).getTime()) < LOCK_TIMEOUT_MS)) {
+          return false;
+        }
         const meta = typeof l.metadata === 'object' && l.metadata !== null ? l.metadata : JSON.parse(l.metadata || '{}');
         if (meta?.outputData?.audit_status || meta?.outputData?.decision) return false;
         if (l.audit_status === 'PASS' || l.audit_status === 'FAIL' || l.audit_status === 'REVIEW' || l.status === 'COMPLETED') return false;
         return true;
+      };
+
+      // processingIds is already scoped at getNextQueuedAudit level
+      let mLeads = (mockStore.data?.campaign_leads || []).filter((l) => {
+        if (cleanProjectId && l.project_id !== cleanProjectId && l.project_code !== cleanProjectId) return false;
+        if (vendorId && !isMaster && l.vendor_id && l.vendor_id !== vendorId) return false;
+        return isMockLeadAvailable(l);
       });
 
       // Fallback 1: If no pending lead found strictly for cleanProjectId, pick any un-audited lead from the pool
       if (mLeads.length === 0) {
-        mLeads = (mockStore.data?.campaign_leads || []).filter((l) => {
-          if (processingIds.includes(l.id)) return false;
-          if (excludeLeadIds.includes(l.id)) return false;
-          const meta = typeof l.metadata === 'object' && l.metadata !== null ? l.metadata : JSON.parse(l.metadata || '{}');
-          if (meta?.outputData?.audit_status || meta?.outputData?.decision) return false;
-          if (l.audit_status === 'PASS' || l.audit_status === 'FAIL' || l.audit_status === 'REVIEW' || l.status === 'COMPLETED') return false;
-          return true;
-        });
+        mLeads = (mockStore.data?.campaign_leads || []).filter(isMockLeadAvailable);
       }
 
       // Fallback 2: Generate fresh leads if pool is completely exhausted
