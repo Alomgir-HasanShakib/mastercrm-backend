@@ -490,6 +490,7 @@ const questionnaireService = {
           await trx('sections').where('questionnaire_version_id', id).delete();
 
           const usedQTags = new Set();
+          const allOptionsToInsert = [];
 
           for (let sIdx = 0; sIdx < sectionsToSync.length; sIdx++) {
             const sec = sectionsToSync[sIdx];
@@ -618,9 +619,18 @@ const questionnaireService = {
                 Column16: q.Column16 || metaObj.Column16 || q.condition,
               };
 
-              const resolvedInputTag = q.input_tag || q.inputColumn || mergedMeta.inputColumnDiu || null;
-              const resolvedValTag = q.validation_tag || q.answerValidationColumn || mergedMeta.answerValidationColumn || null;
-              const resolvedActualTag = q.actual_tag || q.actualColumn || mergedMeta.actualColumn || null;
+              const cleanTagVal = (str) => {
+                if (!str || typeof str !== 'string') return null;
+                const trimmed = str.trim();
+                if (trimmed.includes('\n')) {
+                  return trimmed.split(/\r?\n/)[0].trim().slice(0, 100);
+                }
+                return trimmed.slice(0, 100);
+              };
+
+              const resolvedInputTag = cleanTagVal(q.input_tag || q.inputColumn || mergedMeta.inputColumnDiu);
+              const resolvedValTag = cleanTagVal(q.validation_tag || q.answerValidationColumn || mergedMeta.answerValidationColumn);
+              const resolvedActualTag = cleanTagVal(q.actual_tag || q.actualColumn || mergedMeta.actualColumn);
 
               const [createdQ] = await trx('questions').insert({
                 questionnaire_version_id: id,
@@ -653,21 +663,21 @@ const questionnaireService = {
                   }
                   usedOptCodes.add(optCode);
 
-                  try {
-                    await trx('question_options').insert({
-                      question_id: qId,
-                      option_code: optCode,
-                      label: String(optLabel || '').slice(0, 255),
-                      value: String(optValue || '').slice(0, 255),
-                      display_order: opt.displayOrder || oIdx + 1,
-                      metadata: JSON.stringify(opt.metadata || {}),
-                    });
-                  } catch (optErr) {
-                    console.warn('[question_options insert notice]:', optErr.message);
-                  }
+                  allOptionsToInsert.push({
+                    question_id: qId,
+                    option_code: optCode,
+                    label: String(optLabel || '').slice(0, 500),
+                    value: String(optValue || '').slice(0, 500),
+                    display_order: opt.displayOrder || oIdx + 1,
+                    metadata: JSON.stringify(opt.metadata || {}),
+                  });
                 }
               }
             }
+          }
+
+          if (allOptionsToInsert.length > 0) {
+            await trx.batchInsert('question_options', allOptionsToInsert, 100);
           }
         }
       });
