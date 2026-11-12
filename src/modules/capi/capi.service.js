@@ -432,10 +432,16 @@ function formatLeadAsAudit(lead, questions = []) {
 
   const items = questions.map((q) => {
     const ans = resolveLeadAnswer(q, meta, lead);
+    const existingAuditedActual = (meta.outputData?.actual_answers?.[q.question_tag] ||
+      (Array.isArray(meta.outputData?.items)
+        ? meta.outputData.items.find(it => (it.questionTag === q.question_tag || it.code === q.question_tag))?.actualAnswer
+        : '') || '');
+    const isGenuinelyDifferent = Boolean(existingAuditedActual) &&
+      String(existingAuditedActual).trim().toLowerCase() !== String(ans || '').trim().toLowerCase();
     return {
       ...q,
       originalAnswer: ans,
-      actualAnswer: ans,
+      actualAnswer: isGenuinelyDifferent ? existingAuditedActual : '',
     };
   });
 
