@@ -1043,6 +1043,22 @@ const reportsService = {
       };
     }
 
+    // Calculate Organization / Global User & Seat Licensing (CR-06)
+    let totalAllocatedLicenses = organization?.max_created_users || organization?.max_users || 50;
+    let usedLicenses = 0;
+    try {
+      let userQuery = db('users').whereNull('deleted_at');
+      if (organization?.id && organization.id !== 'ALL') {
+        userQuery = userQuery.where('organization_id', organization.id);
+      }
+      const countRes = await userQuery.count('* as cnt').first().catch(() => ({ cnt: 0 }));
+      usedLicenses = parseInt(countRes?.cnt || 0, 10);
+    } catch {
+      usedLicenses = (mockStore.data?.users || []).filter(u => !u.deleted_at).length;
+    }
+    const remainingLicenses = Math.max(0, totalAllocatedLicenses - usedLicenses);
+    const aiLicenses = organization?.audit_ai_licenses || organization?.ai_audit_licenses || 2;
+
     return {
       isSuperAdmin: isMaster,
       organization: organization ? {
@@ -1051,6 +1067,12 @@ const reportsService = {
         code: organization.code,
         enabledModules,
       } : (isMaster ? { id: 'ALL', name: 'All Organizations', enabledModules } : null),
+      licensing: {
+        totalAllocated: totalAllocatedLicenses,
+        usedActive: usedLicenses,
+        remainingAvailable: remainingLicenses,
+        aiAuditLicenses: aiLicenses,
+      },
       activeCampaign: activeCampaign ? {
         id: activeCampaign.id,
         name: activeCampaign.name,
