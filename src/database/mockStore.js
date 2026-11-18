@@ -2706,6 +2706,7 @@ const mockStore = {
       ...user,
       role_name: role.name,
       role_slug: role.slug,
+      role: role.slug,
       role_display_name: role.display_name,
       role_permissions: role.permissions,
       vendor_name: vendor.name,

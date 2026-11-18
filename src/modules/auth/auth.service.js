@@ -734,6 +734,8 @@ const getUserProfile = async (userId) => {
       const campaignAssignments = await getUserCampaignAssignments(userId, mockUser);
       return {
         ...enrichedMock,
+        role: mockUser.role || mockUser.role_slug || 'MASTER_ADMIN',
+        role_slug: mockUser.role_slug || mockUser.role || 'MASTER_ADMIN',
         permissions: mockUser.role_permissions || [],
         assignments: [],
         assignedCampaigns: campaignAssignments,
@@ -766,6 +768,8 @@ const getUserProfile = async (userId) => {
 
   return {
     ...enrichedUser,
+    role: user.role || user.role_slug || 'MASTER_ADMIN',
+    role_slug: user.role_slug || user.role || 'MASTER_ADMIN',
     permissions: permissions || [],
     assignments: assignments || [],
     assignedCampaigns: campaignAssignments,
