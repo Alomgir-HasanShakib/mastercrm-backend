@@ -51,17 +51,26 @@ const db = knex(dbConfig);
 
 let _isDbHealthy = false;
 let _hasCheckedDb = false;
+let _lastHealthCheckTime = 0;
 
 /**
  * Checks health of PostgreSQL connection.
  * @returns {Promise<{ status: string, latencyMs?: number, error?: string }>}
  */
 async function checkDatabaseHealth() {
+  const now = Date.now();
+  if (_hasCheckedDb && now - _lastHealthCheckTime < 10000) {
+    return {
+      status: _isDbHealthy ? 'healthy' : 'unhealthy',
+      cached: true,
+    };
+  }
   const startTime = Date.now();
   try {
     await db.raw('SELECT 1');
     _isDbHealthy = true;
     _hasCheckedDb = true;
+    _lastHealthCheckTime = Date.now();
     return {
       status: 'healthy',
       latencyMs: Date.now() - startTime,
@@ -69,6 +78,7 @@ async function checkDatabaseHealth() {
   } catch (error) {
     _isDbHealthy = false;
     _hasCheckedDb = true;
+    _lastHealthCheckTime = Date.now();
     return {
       status: 'unhealthy',
       latencyMs: Date.now() - startTime,
@@ -279,8 +289,9 @@ function markDbHealthy() {
 }
 
 /**
- * Helper to execute a database query with automatic fallback to mockStore
- * if DB is not reachable or throws an error.
+ * Helper to execute a database query directly in real-time.
+ * Attempts real database query first. Falls back to mockStore ONLY if
+ * remote database is unreachable or throws a connection error.
  *
  * @template T
  * @param {() => Promise<T>} dbAction
@@ -288,26 +299,27 @@ function markDbHealthy() {
  * @returns {Promise<T>}
  */
 async function withDbFallback(dbAction, mockAction) {
-  if (!_hasCheckedDb) {
-    await checkDatabaseHealth();
-  }
-  if (_isDbHealthy) {
-    try {
-      const result = await dbAction();
-      if (result !== undefined && result !== null) {
-        return result;
-      }
-      if (typeof mockAction === 'function') {
-        const mockResult = await mockAction();
-        return mockResult !== undefined && mockResult !== null ? mockResult : result;
-      }
+  // 1. ALWAYS attempt real database operation first for live real-time DB data
+  try {
+    const result = await dbAction();
+    if (result !== undefined && result !== null) {
+      _isDbHealthy = true;
       return result;
-    } catch (err) {
-      console.warn('Database action error, falling back to mockStore:', err.message);
-      return typeof mockAction === 'function' ? await mockAction() : mockAction;
     }
+  } catch (err) {
+    _isDbHealthy = false;
+    console.warn('[Database] Live database query failed:', err.message);
+    if (typeof mockAction === 'function') {
+      return await mockAction();
+    }
+    return mockAction;
   }
-  return typeof mockAction === 'function' ? await mockAction() : mockAction;
+
+  // 2. If DB action returned null/undefined, try fallback
+  if (typeof mockAction === 'function') {
+    return await mockAction();
+  }
+  return mockAction;
 }
 
 /**
